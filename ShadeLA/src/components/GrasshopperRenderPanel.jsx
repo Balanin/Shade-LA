@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { VertexNormalsHelper } from "three/examples/jsm/helpers/VertexNormalsHelper.js";
 
 class OBJParser {
   static parseOBJ(text) {
@@ -78,7 +79,13 @@ function GrasshopperRenderPanel() {
   const [status, setStatus] = useState("Waiting for GH result…");
   const [lastError, setLastError] = useState("");
   const [lastObjText, setLastObjText] = useState("");
-  const [rotDeg, setRotDeg] = useState({ x: 0, y: 0, z: 0 });
+  const [rotDeg, setRotDeg] = useState({ x: -90, y: 0, z: 0 });
+  const [showWireframe, setShowWireframe] = useState(false);
+  const [showAxes, setShowAxes] = useState(true);
+  const [showGrid, setShowGrid] = useState(true);
+  const [showNormals, setShowNormals] = useState(false);
+  const [meshColor, setMeshColor] = useState("#4CAF50");
+  const [opacity, setOpacity] = useState(1.0);
 
   const mountRef = useRef(null);
   const rendererRef = useRef(null);
@@ -86,7 +93,13 @@ function GrasshopperRenderPanel() {
   const cameraRef = useRef(null);
   const controlsRef = useRef(null);
   const meshRef = useRef(null);
+  const wireframeRef = useRef(null);
+  const normalsHelperRef = useRef(null);
+  const axesHelperRef = useRef(null);
+  const gridHelperRef = useRef(null);
   const rafRef = useRef(0);
+  const delayedExtractTimerRef = useRef(0);
+  const extractTokenRef = useRef(0);
   const viewCenterRef = useRef(new THREE.Vector3(0, 0, 0));
   const viewDistRef = useRef(50);
 
@@ -130,6 +143,33 @@ function GrasshopperRenderPanel() {
     };
   }, []);
 
+  const syncNormalsHelper = useMemo(() => {
+    return (nextShow) => {
+      const scene = sceneRef.current;
+      const mesh = meshRef.current;
+      if (!scene) return;
+
+      if (normalsHelperRef.current) {
+        try {
+          scene.remove(normalsHelperRef.current);
+        } catch {
+          // ignore
+        }
+        normalsHelperRef.current = null;
+      }
+
+      if (nextShow && mesh) {
+        try {
+          const helper = new VertexNormalsHelper(mesh, 10, 0xff0000);
+          scene.add(helper);
+          normalsHelperRef.current = helper;
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, []);
+
   const renderObjToDataUrl = useMemo(() => {
     return (objText, width = 1280, height = 720) => {
       const scene = new THREE.Scene();
@@ -143,6 +183,13 @@ function GrasshopperRenderPanel() {
 
       const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
       directionalLight.position.set(50, 100, 50);
+      directionalLight.castShadow = true;
+      directionalLight.shadow.camera.near = 0.1;
+      directionalLight.shadow.camera.far = 1000;
+      directionalLight.shadow.camera.left = -200;
+      directionalLight.shadow.camera.right = 200;
+      directionalLight.shadow.camera.top = 200;
+      directionalLight.shadow.camera.bottom = -200;
       scene.add(directionalLight);
 
       const axesHelper = new THREE.AxesHelper(50);
@@ -159,15 +206,19 @@ function GrasshopperRenderPanel() {
       const info = OBJParser.getGeometryInfo(geometry);
 
       const mat = new THREE.MeshPhongMaterial({
-        color: "#4CAF50",
-        opacity: 1.0,
-        transparent: false,
+        color: meshColor,
+        opacity,
+        transparent: opacity < 1.0,
         side: THREE.DoubleSide,
       });
       const mesh = new THREE.Mesh(geometry, mat);
 
-      // Apply initial rotation to align axes (Z-up to Y-up)
-      mesh.rotation.x = -Math.PI / 2;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+
+      mesh.rotation.x = THREE.MathUtils.degToRad(rotDeg.x);
+      mesh.rotation.y = THREE.MathUtils.degToRad(rotDeg.y);
+      mesh.rotation.z = THREE.MathUtils.degToRad(rotDeg.z);
       scene.add(mesh);
 
       // Use world-space bbox after rotation (and any future transforms) to fit camera.
@@ -186,6 +237,8 @@ function GrasshopperRenderPanel() {
       const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
       renderer.setPixelRatio(1);
       renderer.setSize(width, height, false);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.render(scene, camera);
 
       const dataUrl = renderer.domElement.toDataURL("image/png");
@@ -195,7 +248,7 @@ function GrasshopperRenderPanel() {
 
       return dataUrl;
     };
-  }, []);
+  }, [meshColor, opacity, rotDeg.x, rotDeg.y, rotDeg.z]);
 
   const ensureInteractiveViewer = useMemo(() => {
     return () => {
@@ -216,6 +269,8 @@ function GrasshopperRenderPanel() {
       const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setPixelRatio(window.devicePixelRatio || 1);
       renderer.setSize(w, h, false);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       mount.innerHTML = "";
       mount.appendChild(renderer.domElement);
 
@@ -230,13 +285,24 @@ function GrasshopperRenderPanel() {
 
       const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
       directionalLight.position.set(50, 100, 50);
+      directionalLight.castShadow = true;
+      directionalLight.shadow.camera.near = 0.1;
+      directionalLight.shadow.camera.far = 1000;
+      directionalLight.shadow.camera.left = -200;
+      directionalLight.shadow.camera.right = 200;
+      directionalLight.shadow.camera.top = 200;
+      directionalLight.shadow.camera.bottom = -200;
       scene.add(directionalLight);
 
       const axesHelper = new THREE.AxesHelper(50);
+      axesHelper.visible = !!showAxes;
       scene.add(axesHelper);
+      axesHelperRef.current = axesHelper;
 
       const gridHelper = new THREE.GridHelper(500, 50, 0x444444, 0x222222);
+      gridHelper.visible = !!showGrid;
       scene.add(gridHelper);
+      gridHelperRef.current = gridHelper;
 
       rendererRef.current = renderer;
       sceneRef.current = scene;
@@ -253,7 +319,7 @@ function GrasshopperRenderPanel() {
 
       return true;
     };
-  }, []);
+  }, [showAxes, showGrid]);
 
   const setObjInViewer = useMemo(() => {
     return (objText) => {
@@ -284,6 +350,34 @@ function GrasshopperRenderPanel() {
         meshRef.current = null;
       }
 
+      if (wireframeRef.current) {
+        try {
+          scene.remove(wireframeRef.current);
+        } catch {
+          // ignore
+        }
+        try {
+          wireframeRef.current.geometry?.dispose?.();
+        } catch {
+          // ignore
+        }
+        try {
+          wireframeRef.current.material?.dispose?.();
+        } catch {
+          // ignore
+        }
+        wireframeRef.current = null;
+      }
+
+      if (normalsHelperRef.current) {
+        try {
+          scene.remove(normalsHelperRef.current);
+        } catch {
+          // ignore
+        }
+        normalsHelperRef.current = null;
+      }
+
       const parsed = OBJParser.parseOBJ(objText);
       if (!parsed?.vertices?.length || !parsed?.faces?.length) {
         throw new Error("OBJ contains no vertices/faces");
@@ -292,9 +386,9 @@ function GrasshopperRenderPanel() {
       const geometry = OBJParser.createGeometry(parsed);
 
       const mat = new THREE.MeshPhongMaterial({
-        color: "#4CAF50",
-        opacity: 1.0,
-        transparent: false,
+        color: meshColor,
+        opacity,
+        transparent: opacity < 1.0,
         side: THREE.DoubleSide,
       });
 
@@ -302,8 +396,26 @@ function GrasshopperRenderPanel() {
       mesh.rotation.x = THREE.MathUtils.degToRad(rotDeg.x);
       mesh.rotation.y = THREE.MathUtils.degToRad(rotDeg.y);
       mesh.rotation.z = THREE.MathUtils.degToRad(rotDeg.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       scene.add(mesh);
       meshRef.current = mesh;
+
+      const wireframeMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00ff00,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.3,
+      });
+      const wire = new THREE.Mesh(geometry.clone(), wireframeMaterial);
+      wire.rotation.copy(mesh.rotation);
+      wire.visible = !!showWireframe;
+      scene.add(wire);
+      wireframeRef.current = wire;
+
+      if (showNormals) {
+        syncNormalsHelper(true);
+      }
 
       const worldBox = new THREE.Box3().setFromObject(mesh);
       const worldSize = worldBox.getSize(new THREE.Vector3());
@@ -320,7 +432,7 @@ function GrasshopperRenderPanel() {
       controls.target.copy(worldCenter);
       controls.update();
     };
-  }, [ensureInteractiveViewer, rotDeg.x, rotDeg.y, rotDeg.z]);
+  }, [ensureInteractiveViewer, meshColor, opacity, rotDeg.x, rotDeg.y, rotDeg.z, showNormals, showWireframe, syncNormalsHelper]);
 
   const applyRotationToMesh = useMemo(() => {
     return (nextRotDeg) => {
@@ -336,6 +448,18 @@ function GrasshopperRenderPanel() {
       mesh.rotation.z = THREE.MathUtils.degToRad(nextRotDeg.z);
       mesh.updateMatrixWorld(true);
 
+      if (wireframeRef.current) {
+        wireframeRef.current.rotation.copy(mesh.rotation);
+      }
+
+      if (showNormals && normalsHelperRef.current) {
+        try {
+          normalsHelperRef.current.update();
+        } catch {
+          // ignore
+        }
+      }
+
       const worldBox = new THREE.Box3().setFromObject(mesh);
       const worldSize = worldBox.getSize(new THREE.Vector3());
       const worldCenter = worldBox.getCenter(new THREE.Vector3());
@@ -350,7 +474,7 @@ function GrasshopperRenderPanel() {
       controls.target.copy(worldCenter);
       controls.update();
     };
-  }, []);
+  }, [showNormals]);
 
   const centerAndGround = useMemo(() => {
     return () => {
@@ -545,6 +669,25 @@ function GrasshopperRenderPanel() {
 
   const renderFromSchema = useMemo(() => {
     return async (schema) => {
+      extractTokenRef.current += 1;
+      const token = extractTokenRef.current;
+
+      if (delayedExtractTimerRef.current) {
+        window.clearTimeout(delayedExtractTimerRef.current);
+        delayedExtractTimerRef.current = 0;
+      }
+
+      setStatus("Waiting 2 minutes before extracting…");
+
+      await new Promise((resolve) => {
+        delayedExtractTimerRef.current = window.setTimeout(() => {
+          delayedExtractTimerRef.current = 0;
+          resolve(true);
+        }, 120000);
+      });
+
+      if (token !== extractTokenRef.current) return false;
+
       const res = await requestObjFromViewer();
       if (res?.ok && res.objText) {
         try {
@@ -574,7 +717,13 @@ function GrasshopperRenderPanel() {
       renderFromSchema(schema);
     };
     window.addEventListener("grasshopper:result", onGhResult);
-    return () => window.removeEventListener("grasshopper:result", onGhResult);
+    return () => {
+      window.removeEventListener("grasshopper:result", onGhResult);
+      if (delayedExtractTimerRef.current) {
+        window.clearTimeout(delayedExtractTimerRef.current);
+        delayedExtractTimerRef.current = 0;
+      }
+    };
   }, [renderFromSchema]);
 
   return (
@@ -747,6 +896,90 @@ function GrasshopperRenderPanel() {
             }}
           >
             Download OBJ
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowWireframe((v) => {
+                const next = !v;
+                if (wireframeRef.current) wireframeRef.current.visible = next;
+                return next;
+              });
+            }}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "rgba(17,24,39,0.8)",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            Toggle Wireframe
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowAxes((v) => {
+                const next = !v;
+                if (axesHelperRef.current) axesHelperRef.current.visible = next;
+                return next;
+              });
+            }}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "rgba(17,24,39,0.8)",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            Toggle Axes
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowGrid((v) => {
+                const next = !v;
+                if (gridHelperRef.current) gridHelperRef.current.visible = next;
+                return next;
+              });
+            }}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "rgba(17,24,39,0.8)",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            Toggle Grid
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowNormals((v) => {
+                const next = !v;
+                syncNormalsHelper(next);
+                return next;
+              });
+            }}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "rgba(17,24,39,0.8)",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            Toggle Normals
           </button>
 
           <button
