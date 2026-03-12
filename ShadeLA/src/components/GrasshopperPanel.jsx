@@ -61,7 +61,7 @@ function GrasshopperPanel() {
         window.removeEventListener("grasshopper:curves-response", onResp);
         console.warn("[GH] curves request timeout (viewer did not respond)");
         resolve(null);
-      }, 2000);
+      }, 5000);
     });
   };
 
@@ -76,6 +76,28 @@ function GrasshopperPanel() {
 
     window.addEventListener("grasshopper:input-curves", onCurves);
     return () => window.removeEventListener("grasshopper:input-curves", onCurves);
+  }, []);
+
+  useEffect(() => {
+    let t = 0;
+    const onChanged = () => {
+      if (t) window.clearTimeout(t);
+      t = window.setTimeout(async () => {
+        t = 0;
+        try {
+          const items = await requestCurvesFromViewer();
+          if (Array.isArray(items)) setCurveItems(items);
+        } catch {
+          // ignore
+        }
+      }, 150);
+    };
+
+    window.addEventListener("grasshopper:drawings-changed", onChanged);
+    return () => {
+      window.removeEventListener("grasshopper:drawings-changed", onChanged);
+      if (t) window.clearTimeout(t);
+    };
   }, []);
 
   const normalizePointer = (url) => {
@@ -147,6 +169,11 @@ function GrasshopperPanel() {
     } catch {
       // ignore
     }
+    try {
+      window.dispatchEvent(new CustomEvent("grasshopper:clear-curves"));
+    } catch {
+      // ignore
+    }
     await runSolve({ reset: true });
   };
 
@@ -160,9 +187,14 @@ function GrasshopperPanel() {
       const effectiveRun = opts && typeof opts.run === "boolean" ? opts.run : true;
 
       const respItems = await requestCurvesFromViewer();
-      if (Array.isArray(respItems)) setCurveItems(respItems);
+      if (Array.isArray(respItems) && respItems.length > 0) {
+        setCurveItems(respItems);
+      }
 
-      const currentCurves = Array.isArray(respItems) ? respItems : curveItems;
+      const currentCurves = Array.isArray(respItems) && respItems.length > 0 ? respItems : curveItems;
+      if (Array.isArray(respItems) && respItems.length === 0 && Array.isArray(curveItems) && curveItems.length > 0) {
+        console.log("[GH] viewer returned 0 curves; using cached curves", { cached: curveItems.length });
+      }
 
       try {
         const paramsRes = await fetch(computeParamsUrl, {
@@ -238,27 +270,47 @@ function GrasshopperPanel() {
         body: JSON.stringify(payload),
       });
       const text = await res.text();
-      if (res.ok) {
-        let outCount = 0;
+      let schema = null;
+      try {
+        schema = JSON.parse(text);
+      } catch {
+        schema = null;
+      }
+
+      const outCount = Array.isArray(schema?.values) ? schema.values.length : 0;
+      const errCount = Array.isArray(schema?.errors) ? schema.errors.length : 0;
+      const warnCount = Array.isArray(schema?.warnings) ? schema.warnings.length : 0;
+
+      if (schema && !effectiveReset && outCount > 0) {
         try {
-          const schema = JSON.parse(text);
-          outCount = Array.isArray(schema?.values) ? schema.values.length : 0;
-          console.log("[GH] solve OK", { outputs: outCount });
-          if (effectiveReset) {
-            try {
-              window.dispatchEvent(new CustomEvent("grasshopper:clear-result"));
-            } catch {
-              // ignore
-            }
-          } else {
-            window.dispatchEvent(new CustomEvent("grasshopper:result", { detail: { schema } }));
-          }
+          window.dispatchEvent(new CustomEvent("grasshopper:result", { detail: { schema } }));
         } catch {
           // ignore
         }
-        setStatusText(outCount > 0 ? `OK (${outCount} outputs)` : "OK");
+      }
+
+      if (effectiveReset) {
+        try {
+          window.dispatchEvent(new CustomEvent("grasshopper:clear-result"));
+        } catch {
+          // ignore
+        }
+      }
+
+      if (res.ok) {
+        console.log("[GH] solve OK", { outputs: outCount, errors: errCount, warnings: warnCount });
+        const suffix = [];
+        if (errCount) suffix.push(`${errCount} errors`);
+        if (warnCount) suffix.push(`${warnCount} warnings`);
+        const extra = suffix.length ? `; ${suffix.join(", ")}` : "";
+        setStatusText(outCount > 0 ? `OK (${outCount} outputs${extra})` : `OK${extra}`);
       } else {
-        setStatusText(`${res.status} ${res.statusText}`);
+        const suffix = [];
+        if (outCount) suffix.push(`${outCount} outputs`);
+        if (errCount) suffix.push(`${errCount} errors`);
+        if (warnCount) suffix.push(`${warnCount} warnings`);
+        const extra = suffix.length ? ` (${suffix.join(", ")})` : "";
+        setStatusText(`${res.status} ${res.statusText}${extra}`);
       }
       setDetailsText(text);
     } catch (e) {

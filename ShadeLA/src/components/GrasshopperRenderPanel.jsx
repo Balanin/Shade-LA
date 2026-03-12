@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { ConvexGeometry } from "three/examples/jsm/geometries/ConvexGeometry.js";
 import { VertexNormalsHelper } from "three/examples/jsm/helpers/VertexNormalsHelper.js";
+import rhino3dm from "rhino3dm/rhino3dm.module.js";
+import rhino3dmWasmUrl from "rhino3dm/rhino3dm.wasm?url";
 
 class OBJParser {
   static parseOBJ(text) {
@@ -94,6 +97,9 @@ function GrasshopperRenderPanel() {
   const controlsRef = useRef(null);
   const meshRef = useRef(null);
   const wireframeRef = useRef(null);
+  const pointCloudRef = useRef(null);
+  const hullMeshRef = useRef(null);
+  const curveGroupRef = useRef(null);
   const normalsHelperRef = useRef(null);
   const axesHelperRef = useRef(null);
   const gridHelperRef = useRef(null);
@@ -102,6 +108,25 @@ function GrasshopperRenderPanel() {
   const extractTokenRef = useRef(0);
   const viewCenterRef = useRef(new THREE.Vector3(0, 0, 0));
   const viewDistRef = useRef(50);
+  const lastSchemaRef = useRef(null);
+  const rhinoModuleRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mod = await rhino3dm({ locateFile: () => rhino3dmWasmUrl });
+        if (cancelled) return;
+        rhinoModuleRef.current = mod;
+      } catch {
+        if (cancelled) return;
+        rhinoModuleRef.current = null;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const requestObjFromViewer = useMemo(() => {
     return async () => {
@@ -142,6 +167,417 @@ function GrasshopperRenderPanel() {
       });
     };
   }, []);
+
+  const ensureInteractiveViewer = useMemo(() => {
+    return () => {
+      const mount = mountRef.current;
+      if (!mount) return false;
+      if (rendererRef.current && sceneRef.current && cameraRef.current && controlsRef.current) return true;
+
+      const w = mount.clientWidth || 800;
+      const h = mount.clientHeight || 500;
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x1a1a1a);
+
+      const camera = new THREE.PerspectiveCamera(75, w / h, 0.1, 10000);
+      camera.position.set(100, 100, 100);
+      camera.up.set(0, 1, 0);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      renderer.setSize(w, h, false);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      mount.innerHTML = "";
+      mount.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.minPolarAngle = 0.05;
+      controls.maxPolarAngle = Math.PI - 0.05;
+
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+      scene.add(ambientLight);
+
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+      directionalLight.position.set(50, 100, 50);
+      directionalLight.castShadow = true;
+      directionalLight.shadow.camera.near = 0.1;
+      directionalLight.shadow.camera.far = 1000;
+      directionalLight.shadow.camera.left = -200;
+      directionalLight.shadow.camera.right = 200;
+      directionalLight.shadow.camera.top = 200;
+      directionalLight.shadow.camera.bottom = -200;
+      scene.add(directionalLight);
+
+      const axesHelper = new THREE.AxesHelper(50);
+      axesHelper.visible = !!showAxes;
+      scene.add(axesHelper);
+      axesHelperRef.current = axesHelper;
+
+      const gridHelper = new THREE.GridHelper(500, 50, 0x444444, 0x222222);
+      gridHelper.visible = !!showGrid;
+      scene.add(gridHelper);
+      gridHelperRef.current = gridHelper;
+
+      rendererRef.current = renderer;
+      sceneRef.current = scene;
+      cameraRef.current = camera;
+      controlsRef.current = controls;
+
+      const curves = new THREE.Group();
+      curves.name = "gh-curves";
+      scene.add(curves);
+      curveGroupRef.current = curves;
+
+      const animate = () => {
+        if (!rendererRef.current || !sceneRef.current || !cameraRef.current || !controlsRef.current) return;
+        controlsRef.current.update();
+        rendererRef.current.render(sceneRef.current, cameraRef.current);
+        rafRef.current = requestAnimationFrame(animate);
+      };
+      rafRef.current = requestAnimationFrame(animate);
+
+      return true;
+    };
+  }, [showAxes, showGrid]);
+
+  const setCurvesInViewer = useMemo(() => {
+    return (schema) => {
+      const ok = ensureInteractiveViewer();
+      if (!ok) return false;
+
+      const rhino = rhinoModuleRef.current;
+      if (!rhino) return false;
+
+      const scene = sceneRef.current;
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      const group = curveGroupRef.current;
+      if (!scene || !camera || !controls || !group) return false;
+
+      while (group.children.length) {
+        const child = group.children.pop();
+        try {
+          group.remove(child);
+        } catch {
+          // ignore
+        }
+        try {
+          child.geometry?.dispose?.();
+          child.material?.dispose?.();
+        } catch {
+          // ignore
+        }
+      }
+
+      const values = Array.isArray(schema?.values) ? schema.values : [];
+      const lineMat = new THREE.LineBasicMaterial({ color: 0x7dd3fc, transparent: true, opacity: 0.9 });
+
+      let any = false;
+      let bbox = new THREE.Box3();
+      let bboxInit = false;
+
+      const sampleCurveToPoints = (crv) => {
+        if (!crv) return [];
+        try {
+          if (typeof crv.toPolyline === "function") {
+            const poly = crv.toPolyline(1.0, 0.1, 0.0, 0.0);
+            if (poly && typeof poly.count === "number" && typeof poly.get === "function") {
+              const out = [];
+              for (let i = 0; i < poly.count; i++) {
+                const p = poly.get(i);
+                if (!p) continue;
+                const x = Number(p.X ?? p.x);
+                const y = Number(p.Y ?? p.y);
+                const z = Number(p.Z ?? p.z);
+                if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+                out.push(new THREE.Vector3(x, y, z));
+              }
+              if (out.length >= 2) return out;
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        const out = [];
+        try {
+          const domain = typeof crv.domain === "function" ? crv.domain() : null;
+          const t0 = Number(domain?.t0 ?? domain?.T0 ?? 0);
+          const t1 = Number(domain?.t1 ?? domain?.T1 ?? 1);
+          const n = 64;
+          for (let i = 0; i <= n; i++) {
+            const t = t0 + ((t1 - t0) * i) / n;
+            if (typeof crv.pointAt !== "function") break;
+            const p = crv.pointAt(t);
+            if (!p) continue;
+            const x = Number(p.X ?? p.x);
+            const y = Number(p.Y ?? p.y);
+            const z = Number(p.Z ?? p.z);
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+            out.push(new THREE.Vector3(x, y, z));
+          }
+        } catch {
+          // ignore
+        }
+        return out.length >= 2 ? out : [];
+      };
+
+      for (const tree of values) {
+        const inner = tree?.InnerTree;
+        if (!inner || typeof inner !== "object") continue;
+
+        for (const branchKey of Object.keys(inner)) {
+          const items = inner[branchKey];
+          if (!Array.isArray(items)) continue;
+
+          for (const item of items) {
+            const type = item?.type;
+            const data = item?.data;
+            if (!type || data == null) continue;
+            const tl = String(type).toLowerCase();
+            const looksLikeCurve = tl.includes("curve") || tl.includes("line") || tl.includes("polyline");
+            if (!looksLikeCurve) continue;
+
+            let json = data;
+            if (typeof json === "string") {
+              try {
+                json = JSON.parse(json);
+              } catch {
+                json = null;
+              }
+            }
+            if (!json) continue;
+
+            let obj = null;
+            try {
+              if (typeof rhino?.CommonObject?.decode === "function") obj = rhino.CommonObject.decode(json);
+              else if (typeof rhino?.CommonObject?.fromJSON === "function") obj = rhino.CommonObject.fromJSON(json);
+              else if (typeof rhino?.CommonObject?.FromJSON === "function") obj = rhino.CommonObject.FromJSON(json);
+            } catch {
+              obj = null;
+            }
+            if (!obj) continue;
+
+            let crv = obj;
+            try {
+              if (typeof obj.toNurbsCurve === "function") crv = obj.toNurbsCurve();
+            } catch {
+              crv = obj;
+            }
+
+            const pts = sampleCurveToPoints(crv);
+            if (pts.length < 2) continue;
+
+            const pos = new Float32Array(pts.length * 3);
+            for (let i = 0; i < pts.length; i++) {
+              pos[i * 3 + 0] = pts[i].x;
+              pos[i * 3 + 1] = pts[i].y;
+              pos[i * 3 + 2] = pts[i].z;
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+            geo.computeBoundingBox();
+            const line = new THREE.Line(geo, lineMat);
+            group.add(line);
+            any = true;
+
+            if (geo.boundingBox) {
+              if (!bboxInit) {
+                bbox.copy(geo.boundingBox);
+                bboxInit = true;
+              } else {
+                bbox.union(geo.boundingBox);
+              }
+            }
+          }
+        }
+      }
+
+      if (!any || !bboxInit) return any;
+
+      const center = bbox.getCenter(new THREE.Vector3());
+      const size = bbox.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const dist = maxDim * 2.2;
+      viewCenterRef.current.copy(center);
+      viewDistRef.current = dist;
+      camera.near = Math.max(0.01, maxDim / 1000);
+      camera.far = Math.max(10000, maxDim * 20);
+      camera.updateProjectionMatrix();
+      camera.position.set(center.x + dist, center.y + dist, center.z + dist);
+      controls.target.copy(center);
+      controls.update();
+
+      return any;
+    };
+  }, [ensureInteractiveViewer]);
+
+  const setPointsInViewer = useMemo(() => {
+    return (schema) => {
+      const ok = ensureInteractiveViewer();
+      if (!ok) return false;
+
+      const scene = sceneRef.current;
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      if (!scene || !camera || !controls) return false;
+
+      if (hullMeshRef.current) {
+        try {
+          scene.remove(hullMeshRef.current);
+        } catch {
+          // ignore
+        }
+        try {
+          hullMeshRef.current.geometry?.dispose?.();
+          hullMeshRef.current.material?.dispose?.();
+        } catch {
+          // ignore
+        }
+        hullMeshRef.current = null;
+      }
+
+      if (pointCloudRef.current) {
+        try {
+          scene.remove(pointCloudRef.current);
+        } catch {
+          // ignore
+        }
+        try {
+          pointCloudRef.current.geometry?.dispose?.();
+          pointCloudRef.current.material?.dispose?.();
+        } catch {
+          // ignore
+        }
+        pointCloudRef.current = null;
+      }
+
+      const values = Array.isArray(schema?.values) ? schema.values : [];
+      const pts = [];
+      for (const v of values) {
+        const inner = v?.InnerTree;
+        if (!inner || typeof inner !== "object") continue;
+        for (const key of Object.keys(inner)) {
+          const items = inner[key];
+          if (!Array.isArray(items)) continue;
+          for (const it of items) {
+            const t = String(it?.type || "");
+            if (!t.toLowerCase().includes("point3d")) continue;
+            try {
+              const d = typeof it.data === "string" ? JSON.parse(it.data) : it.data;
+              const x = Number(d?.X);
+              const y = Number(d?.Y);
+              const z = Number(d?.Z);
+              if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+              pts.push(x, y, z);
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+
+      if (!pts.length) return false;
+
+      const vectorsAll = [];
+      for (let i = 0; i < pts.length; i += 3) {
+        vectorsAll.push(new THREE.Vector3(pts[i], pts[i + 1], pts[i + 2]));
+      }
+
+      const maxHullPoints = 2000;
+      let vectors = vectorsAll;
+      if (vectorsAll.length > maxHullPoints) {
+        vectors = [];
+        const step = Math.max(1, Math.floor(vectorsAll.length / maxHullPoints));
+        for (let i = 0; i < vectorsAll.length; i += step) vectors.push(vectorsAll[i]);
+      }
+
+      if (vectors.length >= 4) {
+        try {
+          const hullGeom = new ConvexGeometry(vectors);
+          hullGeom.computeVertexNormals();
+          hullGeom.computeBoundingBox();
+          const hullMat = new THREE.MeshPhongMaterial({
+            color: 0xffd166,
+            opacity: 0.85,
+            transparent: true,
+            side: THREE.DoubleSide,
+          });
+          const hullMesh = new THREE.Mesh(hullGeom, hullMat);
+          hullMesh.castShadow = true;
+          hullMesh.receiveShadow = true;
+          scene.add(hullMesh);
+          hullMeshRef.current = hullMesh;
+
+          const box = hullGeom.boundingBox;
+          if (box) {
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z) || 1;
+            const dist = maxDim * 2.2;
+            viewCenterRef.current.copy(center);
+            viewDistRef.current = dist;
+            camera.near = Math.max(0.01, maxDim / 1000);
+            camera.far = Math.max(10000, maxDim * 20);
+            camera.updateProjectionMatrix();
+            camera.position.set(center.x + dist, center.y + dist, center.z + dist);
+            controls.target.copy(center);
+            controls.update();
+          }
+
+          if (pointCloudRef.current) {
+            try {
+              scene.remove(pointCloudRef.current);
+            } catch {
+              // ignore
+            }
+            try {
+              pointCloudRef.current.geometry?.dispose?.();
+              pointCloudRef.current.material?.dispose?.();
+            } catch {
+              // ignore
+            }
+            pointCloudRef.current = null;
+          }
+
+          return true;
+        } catch {
+          // ignore
+        }
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+      geom.computeBoundingBox();
+
+      const mat = new THREE.PointsMaterial({ color: 0xffd166, size: 2, sizeAttenuation: true });
+      const cloud = new THREE.Points(geom, mat);
+      scene.add(cloud);
+      pointCloudRef.current = cloud;
+
+      const box = geom.boundingBox;
+      if (box) {
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        const dist = maxDim * 2.2;
+        viewCenterRef.current.copy(center);
+        viewDistRef.current = dist;
+        camera.near = Math.max(0.01, maxDim / 1000);
+        camera.far = Math.max(10000, maxDim * 20);
+        camera.updateProjectionMatrix();
+        camera.position.set(center.x + dist, center.y + dist, center.z + dist);
+        controls.target.copy(center);
+        controls.update();
+      }
+
+      return true;
+    };
+  }, [ensureInteractiveViewer]);
 
   const syncNormalsHelper = useMemo(() => {
     return (nextShow) => {
@@ -249,77 +685,6 @@ function GrasshopperRenderPanel() {
       return dataUrl;
     };
   }, [meshColor, opacity, rotDeg.x, rotDeg.y, rotDeg.z]);
-
-  const ensureInteractiveViewer = useMemo(() => {
-    return () => {
-      const mount = mountRef.current;
-      if (!mount) return false;
-      if (rendererRef.current && sceneRef.current && cameraRef.current && controlsRef.current) return true;
-
-      const w = mount.clientWidth || 800;
-      const h = mount.clientHeight || 500;
-
-      const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x1a1a1a);
-
-      const camera = new THREE.PerspectiveCamera(75, w / h, 0.1, 10000);
-      camera.position.set(100, 100, 100);
-      camera.up.set(0, 1, 0);
-
-      const renderer = new THREE.WebGLRenderer({ antialias: true });
-      renderer.setPixelRatio(window.devicePixelRatio || 1);
-      renderer.setSize(w, h, false);
-      renderer.shadowMap.enabled = true;
-      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-      mount.innerHTML = "";
-      mount.appendChild(renderer.domElement);
-
-      const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.05;
-      controls.minPolarAngle = 0.05;
-      controls.maxPolarAngle = Math.PI - 0.05;
-
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
-      scene.add(ambientLight);
-
-      const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-      directionalLight.position.set(50, 100, 50);
-      directionalLight.castShadow = true;
-      directionalLight.shadow.camera.near = 0.1;
-      directionalLight.shadow.camera.far = 1000;
-      directionalLight.shadow.camera.left = -200;
-      directionalLight.shadow.camera.right = 200;
-      directionalLight.shadow.camera.top = 200;
-      directionalLight.shadow.camera.bottom = -200;
-      scene.add(directionalLight);
-
-      const axesHelper = new THREE.AxesHelper(50);
-      axesHelper.visible = !!showAxes;
-      scene.add(axesHelper);
-      axesHelperRef.current = axesHelper;
-
-      const gridHelper = new THREE.GridHelper(500, 50, 0x444444, 0x222222);
-      gridHelper.visible = !!showGrid;
-      scene.add(gridHelper);
-      gridHelperRef.current = gridHelper;
-
-      rendererRef.current = renderer;
-      sceneRef.current = scene;
-      cameraRef.current = camera;
-      controlsRef.current = controls;
-
-      const animate = () => {
-        if (!rendererRef.current || !sceneRef.current || !cameraRef.current || !controlsRef.current) return;
-        controlsRef.current.update();
-        rendererRef.current.render(sceneRef.current, cameraRef.current);
-        rafRef.current = requestAnimationFrame(animate);
-      };
-      rafRef.current = requestAnimationFrame(animate);
-
-      return true;
-    };
-  }, [showAxes, showGrid]);
 
   const setObjInViewer = useMemo(() => {
     return (objText) => {
@@ -672,12 +1037,25 @@ function GrasshopperRenderPanel() {
       extractTokenRef.current += 1;
       const token = extractTokenRef.current;
 
+      lastSchemaRef.current = schema;
+
+      try {
+        setCurvesInViewer(schema);
+        const didPoints = setPointsInViewer(schema);
+        if (didPoints) {
+          setLastError("");
+          setStatus("Ready (points)");
+        } else {
+          setStatus("Waiting 2 minutes before extracting…");
+        }
+      } catch {
+        setStatus("Waiting 2 minutes before extracting…");
+      }
+
       if (delayedExtractTimerRef.current) {
         window.clearTimeout(delayedExtractTimerRef.current);
         delayedExtractTimerRef.current = 0;
       }
-
-      setStatus("Waiting 2 minutes before extracting…");
 
       await new Promise((resolve) => {
         delayedExtractTimerRef.current = window.setTimeout(() => {
@@ -709,7 +1087,7 @@ function GrasshopperRenderPanel() {
       await requestSnapshot();
       return false;
     };
-  }, [renderObjToDataUrl, requestObjFromViewer, requestSnapshot]);
+  }, [renderObjToDataUrl, requestObjFromViewer, requestSnapshot, setCurvesInViewer, setPointsInViewer]);
 
   useEffect(() => {
     const onGhResult = (ev) => {

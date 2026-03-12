@@ -39,6 +39,31 @@ function RhinoViewer() {
   const currentLineRef = useRef(null);
   const previewLineRef = useRef(null);
 
+  const emitDrawingsChanged = () => {
+    try {
+      window.dispatchEvent(new CustomEvent("grasshopper:drawings-changed"));
+    } catch {
+      // ignore
+    }
+  };
+
+  const publishCurvesNow = () => {
+    try {
+      if (!rhinoRef.current) {
+        window.dispatchEvent(new CustomEvent("grasshopper:input-curves", { detail: { paramName: "cr", items: [] } }));
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      sendDrawingsToGrasshopper();
+    } catch {
+      // ignore
+    }
+  };
+
   const SCENE_UNITS_TO_METERS = 1;
 
   const computePolylineLengthMeters = (pts) => {
@@ -253,6 +278,18 @@ function RhinoViewer() {
         try {
           rhinoRef.current = await rhino3dm({ locateFile: () => rhino3dmWasmUrl });
           setRhinoReady(true);
+
+          try {
+            const hasFinal = Array.isArray(drawStateRef.current.polylines) && drawStateRef.current.polylines.length > 0;
+            const hasCurrent = Array.isArray(drawStateRef.current.current) && drawStateRef.current.current.length >= 2;
+            if (hasFinal || hasCurrent) {
+              sendDrawingsToGrasshopper();
+            } else {
+              window.dispatchEvent(new CustomEvent("grasshopper:input-curves", { detail: { paramName: "cr", items: [] } }));
+            }
+          } catch {
+            // ignore
+          }
 
           // If GH asked for curves before rhino3dm finished loading, answer now.
           if (pendingCurveRequestIdRef.current) {
@@ -841,6 +878,8 @@ function RhinoViewer() {
     }
     setModelStatus(`Draw: polyline saved (${lenM.toFixed(2)} m)`);
     forceUiUpdate((x) => x + 1);
+    emitDrawingsChanged();
+    publishCurvesNow();
   };
 
   const undoDraw = () => {
@@ -848,6 +887,8 @@ function RhinoViewer() {
     if (current.length > 0) {
       current.pop();
       forceUiUpdate((x) => x + 1);
+      emitDrawingsChanged();
+      publishCurvesNow();
       return;
     }
 
@@ -869,6 +910,8 @@ function RhinoViewer() {
     }
     lines.pop();
     forceUiUpdate((x) => x + 1);
+    emitDrawingsChanged();
+    publishCurvesNow();
   };
 
   const clearAllDrawings = () => {
@@ -881,13 +924,23 @@ function RhinoViewer() {
     currentLineRef.current = null;
     previewLineRef.current = null;
     forceUiUpdate((x) => x + 1);
+    emitDrawingsChanged();
+    publishCurvesNow();
   };
+
+  useEffect(() => {
+    const onClearCurves = () => {
+      clearAllDrawings();
+    };
+    window.addEventListener("grasshopper:clear-curves", onClearCurves);
+    return () => window.removeEventListener("grasshopper:clear-curves", onClearCurves);
+  }, []);
 
   const sendDrawingsToGrasshopper = () => {
     const rhino = rhinoRef.current;
     if (!rhino) {
       setModelStatus("Rhino3dm not ready (cannot send curves)");
-      return;
+      return [];
     }
 
     const GH_UNIT_SCALE = 1;
@@ -950,7 +1003,14 @@ function RhinoViewer() {
     if (drawStateRef.current.current.length >= 2) {
       all.push(drawStateRef.current.current.map((p) => p.clone()));
     }
-    if (!all.length) return;
+    if (!all.length) {
+      try {
+        window.dispatchEvent(new CustomEvent("grasshopper:input-curves", { detail: { paramName: "cr", items: [] } }));
+      } catch {
+        // ignore
+      }
+      return [];
+    }
 
     try {
       const lens = all.map((pts) => (pts && typeof pts.length === "number" ? pts.length : null));
@@ -1223,7 +1283,12 @@ function RhinoViewer() {
         currentPts: drawStateRef.current.current.length,
         allCandidateLines: all.length,
       });
-      return;
+      try {
+        window.dispatchEvent(new CustomEvent("grasshopper:input-curves", { detail: { paramName: "cr", items: [] } }));
+      } catch {
+        // ignore
+      }
+      return [];
     }
     window.dispatchEvent(new CustomEvent("grasshopper:input-curves", { detail: { paramName: "cr", items } }));
     return items;
