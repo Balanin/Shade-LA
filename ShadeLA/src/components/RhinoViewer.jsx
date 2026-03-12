@@ -764,6 +764,7 @@ function RhinoViewer() {
     const onReqObj = (ev) => {
       const detail = ev?.detail || {};
       const requestId = detail.requestId;
+      const include = detail.include || null;
 
       const respond = (payload) => {
         try {
@@ -777,6 +778,13 @@ function RhinoViewer() {
         respond({ ok: false, error: "Missing requestId" });
         return;
       }
+
+      const wantedParamNames = (() => {
+        if (!include || typeof include !== "object") return new Set(["RH_OUT"]);
+        const names = include.paramNames;
+        if (!Array.isArray(names) || names.length < 1) return new Set(["RH_OUT"]);
+        return new Set(names.map((s) => String(s)));
+      })();
 
       if (!ghGroupRef.current || ghGroupRef.current.children.length < 1) {
         respond({ ok: false, error: "No Grasshopper overlay to export" });
@@ -794,7 +802,12 @@ function RhinoViewer() {
           const meshes = [];
           overlay.traverse((obj) => {
             if (!obj) return;
-            if (obj.isMesh && obj.geometry) meshes.push(obj);
+            if (!obj.isMesh || !obj.geometry) return;
+            if (wantedParamNames) {
+              const p = obj.userData?.ghParamName;
+              if (!p || !wantedParamNames.has(String(p))) return;
+            }
+            meshes.push(obj);
           });
           return meshes;
         };
@@ -1355,6 +1368,15 @@ function RhinoViewer() {
     const values = schema?.values;
     if (!Array.isArray(values)) {
       console.warn("[GH] schema.values missing or not an array", schema);
+      try {
+        window.dispatchEvent(
+          new CustomEvent("grasshopper:overlay-ready", {
+            detail: { paramName: "RH_OUT", ok: false, meshCount: 0, triCount: 0, error: "schema.values missing" },
+          })
+        );
+      } catch {
+        // ignore
+      }
       return;
     }
 
@@ -1604,7 +1626,11 @@ function RhinoViewer() {
       return null;
     };
 
+    let sawRhOut = false;
     for (const tree of values) {
+      const outParam = String(tree?.ParamName || "");
+      if (outParam !== "RH_OUT") continue;
+      sawRhOut = true;
       const inner = tree?.InnerTree || tree?.innerTree;
       if (!inner || typeof inner !== "object") continue;
 
@@ -1722,8 +1748,20 @@ function RhinoViewer() {
               geo.setIndex(indices);
               geo.computeVertexNormals();
 
+              const paramName = String(tree?.ParamName || "Unnamed");
+              const groupName = `gh-out:${paramName}`;
+              let outGroup = overlay.getObjectByName(groupName);
+              if (!outGroup) {
+                outGroup = new THREE.Group();
+                outGroup.name = groupName;
+                outGroup.userData = { ghParamName: paramName };
+                overlay.add(outGroup);
+              }
+
               const mesh = new THREE.Mesh(geo, mat);
-              overlay.add(mesh);
+              mesh.name = `gh-mesh:${paramName}`;
+              mesh.userData = { ghParamName: paramName };
+              outGroup.add(mesh);
             } catch (err) {
               console.warn("[GH] mesh conversion failed", err);
             }
@@ -1747,6 +1785,21 @@ function RhinoViewer() {
         meshCount,
         triCount,
       });
+      try {
+        window.dispatchEvent(
+          new CustomEvent("grasshopper:overlay-ready", {
+            detail: {
+              paramName: "RH_OUT",
+              ok: false,
+              meshCount,
+              triCount,
+              error: sawRhOut ? "RH_OUT produced no meshes" : "RH_OUT output missing",
+            },
+          })
+        );
+      } catch {
+        // ignore
+      }
       return;
     }
 
@@ -1758,6 +1811,16 @@ function RhinoViewer() {
 
     scene.add(overlay);
     ghGroupRef.current = overlay;
+
+    try {
+      window.dispatchEvent(
+        new CustomEvent("grasshopper:overlay-ready", {
+          detail: { paramName: "RH_OUT", ok: true, meshCount, triCount },
+        })
+      );
+    } catch {
+      // ignore
+    }
 
     const cityGroups = groupsRef.current;
     const cityCandidates = [cityGroups?.buildings, cityGroups?.roads, cityGroups?.parks, cityGroups?.water].filter(Boolean);

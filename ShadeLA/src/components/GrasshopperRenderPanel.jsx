@@ -82,6 +82,7 @@ function GrasshopperRenderPanel() {
   const [status, setStatus] = useState("Waiting for GH result…");
   const [lastError, setLastError] = useState("");
   const [lastObjText, setLastObjText] = useState("");
+  const [autoExportRhOut, setAutoExportRhOut] = useState(false);
   const [rotDeg, setRotDeg] = useState({ x: -90, y: 0, z: 0 });
   const [showWireframe, setShowWireframe] = useState(false);
   const [showAxes, setShowAxes] = useState(true);
@@ -104,12 +105,12 @@ function GrasshopperRenderPanel() {
   const axesHelperRef = useRef(null);
   const gridHelperRef = useRef(null);
   const rafRef = useRef(0);
-  const delayedExtractTimerRef = useRef(0);
   const extractTokenRef = useRef(0);
   const viewCenterRef = useRef(new THREE.Vector3(0, 0, 0));
   const viewDistRef = useRef(50);
   const lastSchemaRef = useRef(null);
   const rhinoModuleRef = useRef(null);
+  const lastRhOutReadyRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,13 +130,15 @@ function GrasshopperRenderPanel() {
   }, []);
 
   const requestObjFromViewer = useMemo(() => {
-    return async () => {
+    return async (include = null) => {
       const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       setStatus("Exporting OBJ…");
       setLastError("");
 
       return new Promise((resolve) => {
         let done = false;
+
+        const timeoutMs = 30000;
 
         const cleanup = () => {
           window.removeEventListener("grasshopper:obj", onObj);
@@ -157,13 +160,47 @@ function GrasshopperRenderPanel() {
         };
 
         window.addEventListener("grasshopper:obj", onObj);
-        window.dispatchEvent(new CustomEvent("grasshopper:request-obj", { detail: { requestId } }));
+        window.dispatchEvent(new CustomEvent("grasshopper:request-obj", { detail: { requestId, include } }));
 
         window.setTimeout(() => {
           if (done) return;
           cleanup();
           resolve({ ok: false, error: "OBJ export timeout (viewer did not respond)" });
-        }, 3000);
+        }, timeoutMs);
+      });
+    };
+  }, []);
+
+  const waitForRhOutOverlay = useMemo(() => {
+    return async ({ timeoutMs = 30000 } = {}) => {
+      return new Promise((resolve) => {
+        const cached = lastRhOutReadyRef.current;
+        if (cached && String(cached.paramName || "") === "RH_OUT") {
+          resolve({ ok: !!cached.ok, meshCount: cached.meshCount ?? 0, triCount: cached.triCount ?? 0, error: cached.error });
+          return;
+        }
+
+        let done = false;
+
+        const cleanup = () => {
+          window.removeEventListener("grasshopper:overlay-ready", onReady);
+        };
+
+        const onReady = (ev) => {
+          const detail = ev?.detail;
+          if (!detail || String(detail.paramName || "") !== "RH_OUT") return;
+          lastRhOutReadyRef.current = detail;
+          done = true;
+          cleanup();
+          resolve({ ok: !!detail.ok, meshCount: detail.meshCount ?? 0, triCount: detail.triCount ?? 0, error: detail.error });
+        };
+
+        window.addEventListener("grasshopper:overlay-ready", onReady);
+        window.setTimeout(() => {
+          if (done) return;
+          cleanup();
+          resolve({ ok: false, meshCount: 0, triCount: 0, error: "Timed out waiting for RH_OUT overlay" });
+        }, timeoutMs);
       });
     };
   }, []);
@@ -1033,40 +1070,53 @@ function GrasshopperRenderPanel() {
   }, []);
 
   const renderFromSchema = useMemo(() => {
-    return async (schema) => {
+    return async (schema, { exportObj = true } = {}) => {
       extractTokenRef.current += 1;
       const token = extractTokenRef.current;
 
-      lastSchemaRef.current = schema;
+      const filteredSchema = (() => {
+        const values = schema?.values;
+        if (!schema || !Array.isArray(values)) return schema;
+        const only = values.filter((v) => String(v?.ParamName || "") === "RH_OUT");
+        return { ...schema, values: only };
+      })();
+
+      lastSchemaRef.current = filteredSchema;
 
       try {
-        setCurvesInViewer(schema);
-        const didPoints = setPointsInViewer(schema);
+        setCurvesInViewer(filteredSchema);
+        const didPoints = setPointsInViewer(filteredSchema);
         if (didPoints) {
           setLastError("");
           setStatus("Ready (points)");
-        } else {
-          setStatus("Waiting 2 minutes before extracting…");
         }
       } catch {
-        setStatus("Waiting 2 minutes before extracting…");
+        // ignore
       }
-
-      if (delayedExtractTimerRef.current) {
-        window.clearTimeout(delayedExtractTimerRef.current);
-        delayedExtractTimerRef.current = 0;
-      }
-
-      await new Promise((resolve) => {
-        delayedExtractTimerRef.current = window.setTimeout(() => {
-          delayedExtractTimerRef.current = 0;
-          resolve(true);
-        }, 120000);
-      });
 
       if (token !== extractTokenRef.current) return false;
 
-      const res = await requestObjFromViewer();
+      if (!exportObj) {
+        setStatus("Ready");
+        return true;
+      }
+
+      // Ensure the viewer had time to build the RH_OUT overlay before asking it to export OBJ.
+      // This avoids requesting OBJ while the overlay is still empty.
+      try {
+        const ready = await waitForRhOutOverlay({ timeoutMs: 30000 });
+        if (ready && ready.ok === false) {
+          const msg = ready?.error ? String(ready.error) : "RH_OUT overlay not ready";
+          setLastError(msg);
+          setStatus("Error");
+          await requestSnapshot();
+          return false;
+        }
+      } catch {
+        // ignore
+      }
+
+      const res = await requestObjFromViewer({ paramNames: ["RH_OUT"] });
       if (res?.ok && res.objText) {
         try {
           setStatus("Rendering OBJ…");
@@ -1089,26 +1139,115 @@ function GrasshopperRenderPanel() {
     };
   }, [renderObjToDataUrl, requestObjFromViewer, requestSnapshot, setCurvesInViewer, setPointsInViewer]);
 
+  const exportRhOutNow = useMemo(() => {
+    return async () => {
+      const schema = lastSchemaRef.current;
+      if (!schema) {
+        setLastError("No GH result yet");
+        setStatus("Error");
+        return false;
+      }
+
+      extractTokenRef.current += 1;
+      const token = extractTokenRef.current;
+
+      try {
+        const ready = await waitForRhOutOverlay({ timeoutMs: 30000 });
+        if (ready && ready.ok === false) {
+          const msg = ready?.error ? String(ready.error) : "RH_OUT overlay not ready";
+          setLastError(msg);
+          setStatus("Error");
+          await requestSnapshot();
+          return false;
+        }
+      } catch {
+        // ignore
+      }
+
+      if (token !== extractTokenRef.current) return false;
+
+      const res = await requestObjFromViewer({ paramNames: ["RH_OUT"] });
+      if (res?.ok && res.objText) {
+        try {
+          setStatus("Rendering OBJ…");
+          setLastError("");
+          setLastObjText(res.objText);
+          setObjInViewer(res.objText);
+          setStatus("Ready");
+          return true;
+        } catch (e) {
+          setLastError(String(e?.message || e));
+          setStatus("Error");
+          return false;
+        }
+      }
+
+      const msg = res?.error ? String(res.error) : "OBJ export failed";
+      setLastError(msg);
+      await requestSnapshot();
+      return false;
+    };
+  }, [requestObjFromViewer, requestSnapshot, waitForRhOutOverlay]);
+
   useEffect(() => {
     const onGhResult = (ev) => {
       const schema = ev?.detail?.schema;
-      renderFromSchema(schema);
+      lastRhOutReadyRef.current = null;
+      // Always store latest schema so user can export on demand.
+      renderFromSchema(schema, { exportObj: autoExportRhOut });
+      if (!autoExportRhOut) setLastObjText("");
     };
     window.addEventListener("grasshopper:result", onGhResult);
     return () => {
       window.removeEventListener("grasshopper:result", onGhResult);
-      if (delayedExtractTimerRef.current) {
-        window.clearTimeout(delayedExtractTimerRef.current);
-        delayedExtractTimerRef.current = 0;
-      }
     };
-  }, [renderFromSchema]);
+  }, [autoExportRhOut, renderFromSchema]);
+
+  useEffect(() => {
+    const onReady = (ev) => {
+      const detail = ev?.detail;
+      if (!detail || String(detail.paramName || "") !== "RH_OUT") return;
+      lastRhOutReadyRef.current = detail;
+    };
+    window.addEventListener("grasshopper:overlay-ready", onReady);
+    return () => window.removeEventListener("grasshopper:overlay-ready", onReady);
+  }, []);
 
   return (
     <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: 10 }}>
         <div style={{ fontSize: 12, color: "rgba(229,231,235,0.9)" }}>{status}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => exportRhOutNow()}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "rgba(15,118,110,0.85)",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            Export RH_OUT
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setAutoExportRhOut((v) => !v)}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: autoExportRhOut ? "rgba(15,118,110,0.85)" : "rgba(17,24,39,0.8)",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            Auto Export: {autoExportRhOut ? "On" : "Off"}
+          </button>
+
           <button
             type="button"
             onClick={() => applyViewPreset("reset")}
@@ -1377,7 +1516,13 @@ function GrasshopperRenderPanel() {
                 }
               }
 
-              const res = await requestObjFromViewer();
+              try {
+                await waitForRhOutOverlay({ timeoutMs: 30000 });
+              } catch {
+                // ignore
+              }
+
+              const res = await requestObjFromViewer({ paramNames: ["RH_OUT"] });
               if (res?.ok && res.objText) {
                 try {
                   setStatus("Rendering OBJ…");
