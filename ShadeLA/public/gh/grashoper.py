@@ -252,6 +252,9 @@ if curves_in:
 else:
     web_curves = []
 
+if reset_val or (run_val is False):
+    web_curves = []
+
 if not web_curves:
     try:
         p0 = Rhino.Geometry.Point3d(0, 5, 0)

@@ -31,10 +31,6 @@ function GrasshopperPanel() {
   const [loadFactor, setLoadFactor] = useState(1.62134);
   const [resetPulse, setResetPulse] = useState(false);
 
-  const [x, setX] = useState(10);
-  const [h, setH] = useState(8);
-  const [z, setZ] = useState(5);
-
   const [isLoadingSolve, setIsLoadingSolve] = useState(false);
 
   const [curveItems, setCurveItems] = useState([]);
@@ -110,6 +106,15 @@ function GrasshopperPanel() {
     return u;
   };
 
+  const debugPointerCacheBust = useMemo(() => {
+    const env = import.meta?.env?.VITE_DEBUG_GH_POINTER_CACHEBUST;
+    if (typeof env === "string") {
+      const s = env.trim().toLowerCase();
+      return s === "1" || s === "true" || s === "yes";
+    }
+    return false;
+  }, []);
+
   const withCacheBust = (url) => {
     try {
       const u = new URL(url);
@@ -162,7 +167,58 @@ function GrasshopperPanel() {
     };
   };
 
-  const doReset = async () => {
+  const clampActionBooleans = ({ run, reset }) => {
+    const r = !!run;
+    const x = !!reset;
+    if (r && x) {
+      // Never allow both true. Reset wins because it's a one-shot pulse.
+      return { run: false, reset: true };
+    }
+    return { run: r, reset: x };
+  };
+
+  const resolveAction = (action) => {
+    switch (String(action || "").toLowerCase()) {
+      case "solve":
+        return { run: true, reset: false };
+      case "reset":
+        return { run: false, reset: true };
+      case "idle":
+      default:
+        return { run: false, reset: false };
+    }
+  };
+
+  const buildSolvePayload = ({ action, curves, includeNumerics = true, includeCurves = true } = {}) => {
+    const { run, reset } = clampActionBooleans(resolveAction(action));
+
+    const pointerBase = normalizePointer(pointerUrl);
+    const pointer = debugPointerCacheBust ? withCacheBust(pointerBase) : pointerBase;
+
+    const values = [];
+
+    // Geometry-dependent inputs: include on solve/idle only; on reset we intentionally omit.
+    if (!reset) {
+      if (includeCurves && Array.isArray(curves) && curves.length) {
+        values.push(buildCurveListValue("cr", curves));
+      }
+
+      if (includeNumerics) {
+        values.push(buildNumericValue("EdgeLengthFactor", edgeLengthFactor));
+        values.push(buildNumericValue("LineLengthStrength", lineLengthStrength));
+        values.push(buildNumericValue("LineLengthFactor", lineLengthFactor));
+        values.push(buildNumericValue("LoadFactor", loadFactor));
+      }
+    }
+
+    // Always send both booleans (stateless compute action model)
+    values.push(buildBooleanValue("run", run));
+    values.push(buildBooleanValue("reset", reset));
+
+    return { pointer, values, action: { run, reset } };
+  };
+
+  const resetGrasshopper = async () => {
     setCurveItems([]);
     try {
       window.dispatchEvent(new CustomEvent("grasshopper:clear-result"));
@@ -174,7 +230,15 @@ function GrasshopperPanel() {
     } catch {
       // ignore
     }
-    await runSolve({ reset: true });
+    await runSolve({ action: "reset" });
+  };
+
+  const solveGrasshopper = async () => {
+    await runSolve({ action: "solve" });
+  };
+
+  const idleGrasshopper = async () => {
+    await runSolve({ action: "idle" });
   };
 
   const runSolve = async (opts = null) => {
@@ -183,85 +247,67 @@ function GrasshopperPanel() {
     setDetailsText("");
     setLastRequestText("");
     try {
-      const effectiveReset = !!(opts && opts.reset === true);
-      const effectiveRun = opts && typeof opts.run === "boolean" ? opts.run : true;
+      const action = opts && typeof opts.action === "string" ? opts.action : "solve";
+      const actionBooleans = clampActionBooleans(resolveAction(action));
+      const effectiveReset = !!actionBooleans.reset;
+      const effectiveRun = !!actionBooleans.run;
 
-      const respItems = await requestCurvesFromViewer();
-      if (Array.isArray(respItems) && respItems.length > 0) {
-        setCurveItems(respItems);
+      let currentCurves = curveItems;
+      if (!effectiveReset) {
+        const respItems = await requestCurvesFromViewer();
+        if (Array.isArray(respItems) && respItems.length > 0) {
+          setCurveItems(respItems);
+        }
+
+        currentCurves = Array.isArray(respItems) && respItems.length > 0 ? respItems : curveItems;
+        if (Array.isArray(respItems) && respItems.length === 0 && Array.isArray(curveItems) && curveItems.length > 0) {
+          console.log("[GH] viewer returned 0 curves; using cached curves", { cached: curveItems.length });
+        }
       }
 
-      const currentCurves = Array.isArray(respItems) && respItems.length > 0 ? respItems : curveItems;
-      if (Array.isArray(respItems) && respItems.length === 0 && Array.isArray(curveItems) && curveItems.length > 0) {
-        console.log("[GH] viewer returned 0 curves; using cached curves", { cached: curveItems.length });
-      }
-
+      // Optional: keep POSTing to the params store for GH-side web receiver components.
+      // Always send both booleans using the same action model.
       try {
-        const paramsRes = await fetch(computeParamsUrl, {
+        const body = effectiveReset
+          ? { reset: true, run: false }
+          : {
+              edge: edgeLengthFactor,
+              lineStrength: lineLengthStrength,
+              lineFactor: lineLengthFactor,
+              load: loadFactor,
+              reset: effectiveReset,
+              run: effectiveRun,
+              cr: Array.isArray(currentCurves) ? currentCurves : [],
+            };
+
+        await fetch(computeParamsUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            x,
-            h,
-            z,
-            edge: edgeLengthFactor,
-            lineStrength: lineLengthStrength,
-            lineFactor: lineLengthFactor,
-            load: loadFactor,
-            reset: effectiveReset,
-            run: effectiveRun,
-            cr: Array.isArray(currentCurves) ? currentCurves : [],
-          }),
+          body: JSON.stringify(body),
         });
-        if (!paramsRes.ok) {
-          let bodyText = "";
-          try {
-            bodyText = await paramsRes.text();
-          } catch {
-            // ignore
-          }
-          console.warn("[GH] compute params POST returned non-OK", {
-            url: computeParamsUrl,
-            status: paramsRes.status,
-            statusText: paramsRes.statusText,
-            body: bodyText,
-          });
-        }
-      } catch (e) {
-        console.warn("[GH] failed to POST /api/compute/params", {
-          url: computeParamsUrl,
-          error: String(e),
-        });
+      } catch {
+        // ignore
       }
 
-      const pointer = withCacheBust(normalizePointer(pointerUrl));
-
-      const values = [];
-      if (Array.isArray(currentCurves) && currentCurves.length) {
-        values.push(buildCurveListValue("cr", currentCurves));
-      }
-
-      values.push(buildNumericValue("EdgeLengthFactor", edgeLengthFactor));
-      values.push(buildNumericValue("LineLengthStrength", lineLengthStrength));
-      values.push(buildNumericValue("LineLengthFactor", lineLengthFactor));
-      values.push(buildNumericValue("LoadFactor", loadFactor));
-
-      values.push(buildNumericValue("x", x));
-      values.push(buildNumericValue("h", h));
-      values.push(buildNumericValue("z", z));
-
-      values.push(buildBooleanValue("run", effectiveRun));
-      if (effectiveReset) values.push(buildBooleanValue("Reset", true));
-
-      const payload = {
-        pointer,
-        values,
-      };
+      const built = buildSolvePayload({ action, curves: currentCurves, includeNumerics: true, includeCurves: true });
+      const payload = { pointer: built.pointer, values: built.values };
 
       try {
         setLastRequestText(JSON.stringify(payload, null, 2));
       } catch {
         setLastRequestText(String(payload));
+      }
+
+      try {
+        fetch("/gh-debug-request", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }).catch(() => {
+          // ignore
+        });
+      } catch {
+        // ignore
       }
 
       const res = await fetch("/compute/grasshopper", {
@@ -342,7 +388,7 @@ function GrasshopperPanel() {
         />
         <button
           type="button"
-          onClick={runSolve}
+          onClick={solveGrasshopper}
           disabled={isLoadingSolve}
           style={{
             padding: "8px 12px",
@@ -405,25 +451,10 @@ function GrasshopperPanel() {
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ color: "#e5e7eb", fontSize: 12, opacity: 0.9 }}>x: {x}</div>
-            <input type="range" min={1} max={20} step={1} value={x} onChange={(e) => setX(Number(e.target.value))} />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ color: "#e5e7eb", fontSize: 12, opacity: 0.9 }}>h: {h}</div>
-            <input type="range" min={1} max={20} step={1} value={h} onChange={(e) => setH(Number(e.target.value))} />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ color: "#e5e7eb", fontSize: 12, opacity: 0.9 }}>z: {z}</div>
-            <input type="range" min={1} max={20} step={1} value={z} onChange={(e) => setZ(Number(e.target.value))} />
-          </div>
-        </div>
-
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <button
             type="button"
-            onClick={doReset}
+            onClick={resetGrasshopper}
             disabled={isLoadingSolve}
             style={{
               padding: "6px 10px",

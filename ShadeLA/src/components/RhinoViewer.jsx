@@ -1405,6 +1405,28 @@ function RhinoViewer() {
         };
       });
       console.log("[GH] output trees", outSummary);
+
+      const rawRhOut = values.find((v) => String(v?.ParamName || "") === "RH_OUT");
+      const rawBlank = values.find((v) => String(v?.ParamName || "") === "");
+
+      console.log("[GH] raw RH_OUT tree", rawRhOut);
+      console.log("[GH] raw blank ParamName tree", rawBlank);
+
+      try {
+        fetch("/gh-debug-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ts: Date.now(),
+            rawRhOut: rawRhOut ?? null,
+            rawBlank: rawBlank ?? null,
+          }),
+        }).catch(() => {
+          // ignore
+        });
+      } catch {
+        // ignore
+      }
     } catch {
       // ignore
     }
@@ -1465,6 +1487,64 @@ function RhinoViewer() {
       }
       if (typeof res.length === "number") return Array.from(res);
       return [];
+    };
+
+    const buildGeometryFromMeshData = (meshData) => {
+      if (!meshData || typeof meshData !== "object") return null;
+
+      const vertices = meshData.vertices;
+      const faces = meshData.faces;
+      if (!Array.isArray(vertices) || vertices.length < 3) return null;
+      if (!Array.isArray(faces) || faces.length < 3) return null;
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(vertices), 3));
+      geo.setIndex(faces);
+
+      const normals = meshData.normals;
+      if (Array.isArray(normals) && normals.length === vertices.length) {
+        geo.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(normals), 3));
+      } else {
+        geo.computeVertexNormals();
+      }
+
+      const colors = meshData.colors;
+      if (Array.isArray(colors) && (colors.length === vertices.length || colors.length * 3 === vertices.length)) {
+        // Expect per-vertex RGB floats [0..1]
+        geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(colors), 3));
+      }
+
+      return geo;
+    };
+
+    const tryExtractMeshDataFromItem = (type, data) => {
+      const t = String(type || "");
+      if (t !== "System.String") return null;
+
+      let s = data;
+      if (typeof s !== "string") return null;
+      s = s.trim();
+      if (!s) return null;
+
+      // Some GH strings are double-quoted JSON strings ("{...}")
+      try {
+        if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+          s = JSON.parse(s);
+        }
+      } catch {
+        // ignore
+      }
+
+      let obj;
+      try {
+        obj = typeof s === "string" ? JSON.parse(s) : s;
+      } catch {
+        return null;
+      }
+
+      if (!obj || typeof obj !== "object") return null;
+      if (!Array.isArray(obj.vertices) || !Array.isArray(obj.faces)) return null;
+      return obj;
     };
 
     const getRenderMeshType = () => {
@@ -1629,8 +1709,10 @@ function RhinoViewer() {
     let sawRhOut = false;
     for (const tree of values) {
       const outParam = String(tree?.ParamName || "");
-      if (outParam !== "RH_OUT") continue;
-      sawRhOut = true;
+      const isRhOut = outParam === "RH_OUT";
+      const isRhOutJson = outParam === "RH_OUT_JSON";
+      if (!isRhOut && !isRhOutJson) continue;
+      if (isRhOut) sawRhOut = true;
       const inner = tree?.InnerTree || tree?.innerTree;
       if (!inner || typeof inner !== "object") continue;
 
@@ -1658,6 +1740,49 @@ function RhinoViewer() {
                 item,
               });
             }
+            continue;
+          }
+
+          // Preferred: mesh JSON payload output directly from GH (stable, stateless, web-friendly)
+          try {
+            const meshData = tryExtractMeshDataFromItem(type, data);
+            if (meshData) {
+              const geo = buildGeometryFromMeshData(meshData);
+              if (geo) {
+                meshCount += 1;
+                triCount += Math.floor((Array.isArray(meshData.faces) ? meshData.faces.length : 0) / 3);
+
+                const paramName = String(tree?.ParamName || "Unnamed");
+                const groupName = `gh-out:${paramName}`;
+                let outGroup = overlay.getObjectByName(groupName);
+                if (!outGroup) {
+                  outGroup = new THREE.Group();
+                  outGroup.name = groupName;
+                  outGroup.userData = { ghParamName: paramName };
+                  overlay.add(outGroup);
+                }
+
+                const useVertexColors = !!geo.getAttribute("color");
+                const jsonMat = useVertexColors
+                  ? new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.1, roughness: 0.7 })
+                  : mat;
+
+                const mesh = new THREE.Mesh(geo, jsonMat);
+                mesh.name = `gh-mesh:${paramName}`;
+                mesh.userData = { ghParamName: paramName, source: "mesh_json" };
+                outGroup.add(mesh);
+
+                decodedCount += 1;
+                continue;
+              }
+            }
+          } catch {
+            // ignore
+          }
+
+          // If this is RH_OUT_JSON but it wasn't valid mesh JSON, skip the rhino3dm decode path.
+          if (isRhOutJson) {
+            skippedItemCount += 1;
             continue;
           }
 

@@ -1,0 +1,24 @@
+{
+  "ts": 1773432913153,
+  "rawRhOut": {
+    "ParamName": "RH_OUT",
+    "InnerTree": {
+      "{0;0;0}": []
+    }
+  },
+  "rawBlank": {
+    "ParamName": "",
+    "InnerTree": {
+      "{0;0;0}": [
+        {
+          "type": "System.String",
+          "data": "\"Line-like Curve\""
+        },
+        {
+          "type": "System.String",
+          "data": "\"Line-like Curve\""
+        }
+      ]
+    }
+  }
+}

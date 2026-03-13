@@ -22,9 +22,7 @@ function applyDefaults(s: GhParams) {
   s.lineStrength = 8;
   s.lineFactor = 0.5;
   s.load = 1.0;
-  s.run = true;
   s.cr = [];
-  s.reset = false;
   s.updatedAt = Date.now();
 }
 
@@ -87,8 +85,7 @@ function coerceCurves(v: unknown): Array<{ type: string; data: string }> | null 
 
 export async function GET(_req: NextRequest) {
   const s = getStore();
-  return withCors(
-    NextResponse.json({
+  const payload = {
     x: s.x,
     h: s.h,
     z: s.z,
@@ -100,8 +97,16 @@ export async function GET(_req: NextRequest) {
     run: s.run,
     cr: s.cr,
     updatedAt: s.updatedAt,
-    })
-  );
+  };
+
+  // Treat reset as a one-time signal (pulse). If something reads reset=true,
+  // clear it immediately so it won't keep resetting on every subsequent GET.
+  if (s.reset === true) {
+    s.reset = false;
+    s.updatedAt = Date.now();
+  }
+
+  return withCors(NextResponse.json(payload));
 }
 
 export async function OPTIONS(_req: NextRequest) {
@@ -131,6 +136,13 @@ export async function POST(req: NextRequest) {
   const s = getStore();
   if (reset === true) {
     applyDefaults(s);
+
+    // Preserve explicit reset/run semantics from the caller.
+    // Reset should be able to signal Grasshopper to clear sticky state without forcing a run.
+    s.reset = true;
+    s.run = run === null ? false : run;
+    s.cr = [];
+
     return withCors(
       NextResponse.json({
         ok: true,
