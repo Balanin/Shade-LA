@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import rhino3dm from "rhino3dm/rhino3dm.module.js";
 import rhino3dmWasmUrl from "rhino3dm/rhino3dm.wasm?url";
+import { parseGrasshopperOutputs } from "../gh/grasshopperContract";
 
 function RhinoViewer() {
   const [drawMode, setDrawMode] = useState(false);
@@ -11,6 +12,8 @@ function RhinoViewer() {
   const [modelStatus, setModelStatus] = useState("");
   const [rhinoReady, setRhinoReady] = useState(false);
   const [baseModelReady, setBaseModelReady] = useState(false);
+  const lastGoodGhSchemaRef = useRef(null);
+  const lastGhContractRef = useRef({ ready: false, status: "idle", meta: null, meshItemCount: 0 });
   const waitingForCanvasSizeRef = useRef(false);
   const initAttemptedRef = useRef(false);
   const canvasRef = useRef(null);
@@ -1356,7 +1359,8 @@ function RhinoViewer() {
       return;
     }
 
-    console.log("[GH] overlay pipeline v2");
+    const isDev = !!import.meta?.env?.DEV;
+    if (isDev) console.log("[GH] overlay pipeline v2");
 
     const scene = sceneRef.current;
     if (ghGroupRef.current) {
@@ -1404,13 +1408,13 @@ function RhinoViewer() {
           typeCounts,
         };
       });
-      console.log("[GH] output trees", outSummary);
+      if (isDev) console.log("[GH] output trees", outSummary);
 
       const rawRhOut = values.find((v) => String(v?.ParamName || "") === "RH_OUT");
       const rawBlank = values.find((v) => String(v?.ParamName || "") === "");
 
-      console.log("[GH] raw RH_OUT tree", rawRhOut);
-      console.log("[GH] raw blank ParamName tree", rawBlank);
+      if (isDev) console.log("[GH] raw RH_OUT tree", rawRhOut);
+      if (isDev) console.log("[GH] raw blank ParamName tree", rawBlank);
 
       try {
         fetch("/gh-debug-log", {
@@ -1896,14 +1900,15 @@ function RhinoViewer() {
     }
 
     const decodedClasses = Object.fromEntries(classCounts);
-    console.log("[GH] decode summary", {
-      decodedCount,
-      meshCount,
-      triCount,
-      outputs: values.length,
-      classes: decodedClasses,
-    });
-    console.log("[GH] decoded classes", decodedClasses);
+    if (isDev)
+      console.log("[GH] decode summary", {
+        decodedCount,
+        meshCount,
+        triCount,
+        outputs: values.length,
+        classes: decodedClasses,
+      });
+    if (isDev) console.log("[GH] decoded classes", decodedClasses);
     if (overlay.children.length < 1) {
       console.warn("[GH] no meshes produced from solve output", {
         decodedCount,
@@ -2346,9 +2351,75 @@ function RhinoViewer() {
   useEffect(() => {
     const onGh = (ev) => {
       const schema = ev?.detail?.schema;
-      const outCount = Array.isArray(schema?.values) ? schema.values.length : 0;
-      console.log("[GH] viewer received", { outputs: outCount });
-      addGhOverlay(schema);
+
+      const isDev = !!import.meta?.env?.DEV;
+      const parsed = parseGrasshopperOutputs(schema);
+      const statusRaw = String(parsed.status || "idle");
+      const status = statusRaw.trim().toLowerCase();
+      const meshItemCount = Array.isArray(parsed.meshItems) ? parsed.meshItems.length : 0;
+
+      lastGhContractRef.current = {
+        ready: !!parsed.ready,
+        status: status || "idle",
+        meta: parsed.meta,
+        meshItemCount,
+      };
+
+      if (isDev) {
+        console.log("[GH] contract", {
+          ready: !!parsed.ready,
+          status: status || "idle",
+          meshItemCount,
+          meta: parsed.meta,
+        });
+      }
+
+      const treatAsReady = !!parsed.ready && (status === "ready" || status === "") && meshItemCount > 0;
+      const treatAsRunning = !parsed.ready && (status === "running" || status === "waiting_for_convergence");
+      const treatAsReset = status === "reset";
+      const treatAsError = status === "error";
+
+      if (treatAsReset) {
+        if (isDev) console.log("[GH] apply: reset -> clear overlay");
+        lastGoodGhSchemaRef.current = null;
+        setModelStatus("GH: reset");
+        try {
+          window.dispatchEvent(new CustomEvent("grasshopper:clear-result"));
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      if (treatAsError) {
+        const errMsg = (() => {
+          const m = parsed.meta;
+          if (!m || typeof m !== "object") return "GH: error";
+          const e = m.error || m.message;
+          return e ? `GH: error (${String(e).slice(0, 140)})` : "GH: error";
+        })();
+        if (isDev) console.warn("[GH] apply: error", { meta: parsed.meta });
+        setModelStatus(errMsg);
+        return;
+      }
+
+      if (treatAsReady) {
+        if (isDev) console.log("[GH] apply: ready -> decode & replace overlay");
+        lastGoodGhSchemaRef.current = schema;
+        setModelStatus("GH: ready");
+        addGhOverlay(schema);
+        return;
+      }
+
+      if (treatAsRunning) {
+        if (isDev) console.log("[GH] apply: running/waiting -> preserve current overlay");
+        setModelStatus(status === "running" ? "GH: running" : "GH: waiting for convergence");
+        return;
+      }
+
+      const hasLastGood = !!lastGoodGhSchemaRef.current;
+      if (isDev) console.log("[GH] apply: idle/unknown -> preserve", { status: status || "idle", hasLastGood });
+      setModelStatus(status ? `GH: ${status}` : "GH: idle");
     };
 
     window.addEventListener("grasshopper:result", onGh);

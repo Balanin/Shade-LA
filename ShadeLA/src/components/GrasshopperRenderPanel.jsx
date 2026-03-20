@@ -1077,22 +1077,12 @@ function GrasshopperRenderPanel() {
       const filteredSchema = (() => {
         const values = schema?.values;
         if (!schema || !Array.isArray(values)) return schema;
-        const only = values.filter((v) => String(v?.ParamName || "") === "RH_OUT");
+        const wanted = new Set(["RH_OUT", "RH_OUT_JSON", "RH_READY", "RH_STATUS", "RH_META"]);
+        const only = values.filter((v) => wanted.has(String(v?.ParamName || "")));
         return { ...schema, values: only };
       })();
 
       lastSchemaRef.current = filteredSchema;
-
-      try {
-        setCurvesInViewer(filteredSchema);
-        const didPoints = setPointsInViewer(filteredSchema);
-        if (didPoints) {
-          setLastError("");
-          setStatus("Ready (points)");
-        }
-      } catch {
-        // ignore
-      }
 
       if (token !== extractTokenRef.current) return false;
 

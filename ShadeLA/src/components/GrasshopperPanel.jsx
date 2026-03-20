@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { parseGrasshopperOutputs } from "../gh/grasshopperContract";
 
 function GrasshopperPanel() {
   const defaultPointer = useMemo(() => {
@@ -32,6 +33,11 @@ function GrasshopperPanel() {
   const [resetPulse, setResetPulse] = useState(false);
 
   const [isLoadingSolve, setIsLoadingSolve] = useState(false);
+
+  const [autoWaitUntilReady, setAutoWaitUntilReady] = useState(true);
+
+  const solveSeqRef = useRef(0);
+  const solveAbortRef = useRef(null);
 
   const [curveItems, setCurveItems] = useState([]);
 
@@ -234,7 +240,7 @@ function GrasshopperPanel() {
   };
 
   const solveGrasshopper = async () => {
-    await runSolve({ action: "solve" });
+    await runSolve({ action: "solve", autoWaitUntilReady });
   };
 
   const idleGrasshopper = async () => {
@@ -242,12 +248,25 @@ function GrasshopperPanel() {
   };
 
   const runSolve = async (opts = null) => {
+    solveSeqRef.current += 1;
+    const seq = solveSeqRef.current;
+
+    try {
+      solveAbortRef.current?.abort?.();
+    } catch {
+      // ignore
+    }
+
+    const controller = new AbortController();
+    solveAbortRef.current = controller;
+
     setIsLoadingSolve(true);
     setStatusText("");
     setDetailsText("");
     setLastRequestText("");
     try {
       const action = opts && typeof opts.action === "string" ? opts.action : "solve";
+      const wantAutoWait = !!(opts && opts.autoWaitUntilReady);
       const actionBooleans = clampActionBooleans(resolveAction(action));
       const effectiveReset = !!actionBooleans.reset;
       const effectiveRun = !!actionBooleans.run;
@@ -255,6 +274,7 @@ function GrasshopperPanel() {
       let currentCurves = curveItems;
       if (!effectiveReset) {
         const respItems = await requestCurvesFromViewer();
+        if (seq !== solveSeqRef.current) return;
         if (Array.isArray(respItems) && respItems.length > 0) {
           setCurveItems(respItems);
         }
@@ -267,6 +287,7 @@ function GrasshopperPanel() {
 
       // Optional: keep POSTing to the params store for GH-side web receiver components.
       // Always send both booleans using the same action model.
+      // Only post once per user-triggered run (not on every poll attempt).
       try {
         const body = effectiveReset
           ? { reset: true, run: false }
@@ -289,6 +310,8 @@ function GrasshopperPanel() {
         // ignore
       }
 
+      if (seq !== solveSeqRef.current) return;
+
       const built = buildSolvePayload({ action, curves: currentCurves, includeNumerics: true, includeCurves: true });
       const payload = { pointer: built.pointer, values: built.values };
 
@@ -310,59 +333,134 @@ function GrasshopperPanel() {
         // ignore
       }
 
-      const res = await fetch("/compute/grasshopper", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const text = await res.text();
-      let schema = null;
-      try {
-        schema = JSON.parse(text);
-      } catch {
-        schema = null;
-      }
+      if (seq !== solveSeqRef.current) return;
 
-      const outCount = Array.isArray(schema?.values) ? schema.values.length : 0;
-      const errCount = Array.isArray(schema?.errors) ? schema.errors.length : 0;
-      const warnCount = Array.isArray(schema?.warnings) ? schema.warnings.length : 0;
+      const pollIntervalMs = 1000;
+      const pollMaxAttempts = 120;
 
-      if (schema && !effectiveReset && outCount > 0) {
+      const sleep = async (ms) => {
+        await new Promise((r) => window.setTimeout(r, ms));
+      };
+
+      let lastText = "";
+      let lastResOk = false;
+      let lastStatusForUi = "";
+
+      const attempts = wantAutoWait && action === "solve" ? pollMaxAttempts : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        if (seq !== solveSeqRef.current) return;
+
+        if (attempt > 0) {
+          setStatusText(lastStatusForUi || `Waiting... (${attempt + 1}/${attempts})`);
+          await sleep(pollIntervalMs);
+          if (seq !== solveSeqRef.current) return;
+        }
+
+        // New request per attempt; cancel any in-flight request first.
         try {
-          window.dispatchEvent(new CustomEvent("grasshopper:result", { detail: { schema } }));
+          solveAbortRef.current?.abort?.();
         } catch {
           // ignore
         }
-      }
+        const attemptController = new AbortController();
+        solveAbortRef.current = attemptController;
 
-      if (effectiveReset) {
+        const res = await fetch("/compute/grasshopper", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: attemptController.signal,
+        });
+
+        const text = await res.text();
+        if (seq !== solveSeqRef.current) return;
+
+        lastText = text;
+        lastResOk = !!res.ok;
+
+        let schema = null;
         try {
-          window.dispatchEvent(new CustomEvent("grasshopper:clear-result"));
+          schema = JSON.parse(text);
         } catch {
-          // ignore
+          schema = null;
         }
+
+        const outCount = Array.isArray(schema?.values) ? schema.values.length : 0;
+        const errCount = Array.isArray(schema?.errors) ? schema.errors.length : 0;
+        const warnCount = Array.isArray(schema?.warnings) ? schema.warnings.length : 0;
+
+        if (schema && !effectiveReset && outCount > 0) {
+          try {
+            window.dispatchEvent(new CustomEvent("grasshopper:result", { detail: { schema } }));
+          } catch {
+            // ignore
+          }
+        }
+
+        if (effectiveReset) {
+          try {
+            window.dispatchEvent(new CustomEvent("grasshopper:clear-result"));
+          } catch {
+            // ignore
+          }
+        }
+
+        const parsed = parseGrasshopperOutputs(schema);
+        const statusRaw = String(parsed.status || "idle");
+        const status = statusRaw.trim().toLowerCase();
+        const meshItemCount = Array.isArray(parsed.meshItems) ? parsed.meshItems.length : 0;
+
+        const treatAsReady = !!parsed.ready && (status === "ready" || status === "") && meshItemCount > 0;
+        const treatAsRunning = !parsed.ready && (status === "running" || status === "waiting_for_convergence");
+        const treatAsReset = status === "reset";
+        const treatAsError = status === "error";
+
+        if (treatAsError) {
+          const msg = (() => {
+            const m = parsed.meta;
+            if (!m || typeof m !== "object") return "GH error";
+            const e = m.error || m.message;
+            return e ? `GH error: ${String(e).slice(0, 160)}` : "GH error";
+          })();
+          lastStatusForUi = msg;
+          break;
+        }
+
+        if (treatAsReset) {
+          lastStatusForUi = "GH: reset";
+          break;
+        }
+
+        if (treatAsReady) {
+          lastStatusForUi = "GH: ready";
+          break;
+        }
+
+        if (treatAsRunning) {
+          lastStatusForUi = status === "running" ? "GH: running" : "GH: waiting for convergence";
+          continue;
+        }
+
+        lastStatusForUi = status ? `GH: ${status}` : "GH: idle";
+        if (!wantAutoWait || action !== "solve") break;
       }
 
-      if (res.ok) {
-        console.log("[GH] solve OK", { outputs: outCount, errors: errCount, warnings: warnCount });
-        const suffix = [];
-        if (errCount) suffix.push(`${errCount} errors`);
-        if (warnCount) suffix.push(`${warnCount} warnings`);
-        const extra = suffix.length ? `; ${suffix.join(", ")}` : "";
-        setStatusText(outCount > 0 ? `OK (${outCount} outputs${extra})` : `OK${extra}`);
+      if (lastResOk) {
+        setStatusText(lastStatusForUi || "OK");
       } else {
-        const suffix = [];
-        if (outCount) suffix.push(`${outCount} outputs`);
-        if (errCount) suffix.push(`${errCount} errors`);
-        if (warnCount) suffix.push(`${warnCount} warnings`);
-        const extra = suffix.length ? ` (${suffix.join(", ")})` : "";
-        setStatusText(`${res.status} ${res.statusText}${extra}`);
+        setStatusText(lastStatusForUi || "Request failed");
       }
-      setDetailsText(text);
+
+      setDetailsText(lastText);
     } catch (e) {
+      const name = String(e?.name || "");
+      if (name === "AbortError") {
+        return;
+      }
       setStatusText("Request failed");
       setDetailsText(String(e));
     } finally {
+      if (seq !== solveSeqRef.current) return;
       if (resetPulse) setResetPulse(false);
       setIsLoadingSolve(false);
     }
@@ -401,6 +499,16 @@ function GrasshopperPanel() {
         >
           {isLoadingSolve ? "Running..." : "Run"}
         </button>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 6, color: "rgba(229,231,235,0.9)", fontSize: 12 }}>
+          <input
+            type="checkbox"
+            checked={autoWaitUntilReady}
+            onChange={(e) => setAutoWaitUntilReady(!!e.target.checked)}
+            disabled={isLoadingSolve}
+          />
+          Auto-wait until ready
+        </label>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 0, flex: 1 }}>

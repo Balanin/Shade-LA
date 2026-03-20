@@ -1,27 +1,8 @@
 {
-  "ts": 1773432913046,
+  "ts": 1774035115018,
   "payload": {
     "pointer": "http://localhost:5173/gh/unnamed.gh",
     "values": [
-      {
-        "ParamName": "cr",
-        "InnerTree": {
-          "{ 0; }": [
-            {
-              "type": "Rhino.Geometry.PolylineCurve",
-              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAAK4E/7RyN4rAbujiytv7ncAAAAAAAAAAAMIlHta1qHzAICVqCSl6nMAAAAAAAAAwPQIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAAL1nGGf/fwKAAAAAAAAAAAA=\"}"
-            },
-            {
-              "type": "Rhino.Geometry.PolylineCurve",
-              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAAJjtrg6Ei4jA9yChH4OGn8AAAAAAAAAAALJQ8zo5537AWuthQkqnncAAAAAAAAAwvQIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAAJJy7Sj/fwKAAAAAAAAAAAA=\"}"
-            },
-            {
-              "type": "Rhino.Geometry.PolylineCurve",
-              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAABppV0AZHoXAGS1WU5/dm8AAAAAAAAAAAGa/V3riBYPAVBKEJVvun8AAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAABUKEEb/fwKAAAAAAAAAAAA=\"}"
-            }
-          ]
-        }
-      },
       {
         "ParamName": "EdgeLengthFactor",
         "InnerTree": {
