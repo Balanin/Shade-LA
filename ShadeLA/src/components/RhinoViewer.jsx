@@ -1445,7 +1445,12 @@ function RhinoViewer() {
     // Scale the overlay back down to match the viewer.
     overlay.scale.setScalar(1);
 
-    const mat = new THREE.MeshStandardMaterial({ color: 0xff7a00, metalness: 0.1, roughness: 0.7 });
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xff7a00,
+      metalness: 0.1,
+      roughness: 0.7,
+      side: THREE.DoubleSide,
+    });
 
     let decodedCount = 0;
     let meshCount = 0;
@@ -1768,7 +1773,12 @@ function RhinoViewer() {
 
                 const useVertexColors = !!geo.getAttribute("color");
                 const jsonMat = useVertexColors
-                  ? new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.1, roughness: 0.7 })
+                  ? new THREE.MeshStandardMaterial({
+                      vertexColors: true,
+                      metalness: 0.1,
+                      roughness: 0.7,
+                      side: THREE.DoubleSide,
+                    })
                   : mat;
 
                 const mesh = new THREE.Mesh(geo, jsonMat);

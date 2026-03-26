@@ -219,6 +219,13 @@ function App() {
               </div>
             </section>
 
+            <section className="panel panel-left-secondary">
+              <div className="panel-header">
+                <h2>Panel</h2>
+              </div>
+              <div className="panel-body" />
+            </section>
+
             <section className="panel panel-grasshopper">
               <div className="panel-header">
                 <h2>Grasshopper</h2>
