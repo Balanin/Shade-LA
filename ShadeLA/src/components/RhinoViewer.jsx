@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import rhino3dm from "rhino3dm/rhino3dm.module.js";
 import rhino3dmWasmUrl from "rhino3dm/rhino3dm.wasm?url";
-import { parseGrasshopperOutputs } from "../gh/grasshopperContract";
+import { extractParamItems, parseGrasshopperOutputs } from "../gh/grasshopperContract";
 
 function RhinoViewer() {
   const [drawMode, setDrawMode] = useState(false);
@@ -10,6 +10,7 @@ function RhinoViewer() {
   const drawModeRef = useRef(false);
   const [webglError, setWebglError] = useState(null);
   const [modelStatus, setModelStatus] = useState("");
+  const [hasLastCityJson, setHasLastCityJson] = useState(false);
   const [rhinoReady, setRhinoReady] = useState(false);
   const [baseModelReady, setBaseModelReady] = useState(false);
   const lastGoodGhSchemaRef = useRef(null);
@@ -88,10 +89,34 @@ function RhinoViewer() {
   const pendingBboxRef = useRef(null);
   const pendingBboxFlushRafRef = useRef(0);
   const pendingBboxStartFlushRef = useRef(null);
+  const pendingAnalyzeRef = useRef(null);
+  const analyzeSeqRef = useRef(0);
+  const analyzeAbortRef = useRef(null);
   const osmRenderSeqRef = useRef(0);
   const osmAbortRef = useRef(null);
+  const lastCityJsonRef = useRef("");
+  const lastOsmFeaturesRef = useRef(null);
   const pendingCurveRequestIdRef = useRef(null);
   const pendingCurveRequestTimerRef = useRef(0);
+
+  const downloadCityJsonText = (jsonText) => {
+    if (!jsonText || typeof window === "undefined") return;
+    const blob = new Blob([jsonText], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `OSM_GEOJSON_${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        // ignore
+      }
+    }, 0);
+  };
 
   useEffect(() => {
     drawModeRef.current = drawMode;
@@ -2006,22 +2031,6 @@ function RhinoViewer() {
 
     const scene = sceneRef.current;
 
-    // remove previous groups
-    const prev = groupsRef.current;
-    for (const key of Object.keys(prev)) {
-      const g = prev[key];
-      if (!g) continue;
-      scene.remove(g);
-      g.traverse((obj) => {
-        if (obj.geometry) obj.geometry.dispose?.();
-        if (obj.material) {
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-          for (const m of mats) m.dispose?.();
-        }
-      });
-    }
-    groupsRef.current = { buildings: null, roads: null, parks: null, water: null };
-
     const [west, south, east, north] = bbox;
 
     let geojson = null;
@@ -2029,7 +2038,7 @@ function RhinoViewer() {
       console.log("[OSM] fetch /api/osm start", { west, south, east, north });
       const controller = new AbortController();
       osmAbortRef.current = controller;
-      const timeoutId = window.setTimeout(() => controller.abort(), 30000);
+      const timeoutId = window.setTimeout(() => controller.abort(), 120000);
       const res = await fetch("/api/osm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2086,8 +2095,34 @@ function RhinoViewer() {
       }
     }
 
+    // Only clear previous city groups once we know we have a valid payload.
+    // This prevents the city from disappearing on slow OSM responses/timeouts.
+    try {
+      const prev = groupsRef.current;
+      for (const key of Object.keys(prev)) {
+        const g = prev[key];
+        if (!g) continue;
+        scene.remove(g);
+        g.traverse((obj) => {
+          if (obj.geometry) obj.geometry.dispose?.();
+          if (obj.material) {
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            for (const m of mats) m.dispose?.();
+          }
+        });
+      }
+      groupsRef.current = { buildings: null, roads: null, parks: null, water: null };
+    } catch {
+      // ignore
+    }
+
     try {
       const allFeatures = geojson.features || [];
+      try {
+        lastOsmFeaturesRef.current = Array.isArray(geojson?.features) ? geojson.features : [];
+      } catch {
+        // ignore
+      }
       console.log("[OSM] features", allFeatures.length);
       if (!allFeatures.length) {
         setModelStatus("No OSM features in this area");
@@ -2351,12 +2386,316 @@ function RhinoViewer() {
         targetRef.current.set(0, 0, 0);
         cameraRef.current.lookAt(targetRef.current);
       }
+
+      try {
+        if (pendingAnalyzeRef.current && seq === osmRenderSeqRef.current) {
+          const pending = pendingAnalyzeRef.current;
+          pendingAnalyzeRef.current = null;
+          window.setTimeout(() => {
+            try {
+              runCityAnalyzeCompute(pending);
+            } catch {
+              // ignore
+            }
+          }, 0);
+        }
+      } catch {
+        // ignore
+      }
     } catch (e) {
       console.error("[OSM] renderBbox processing failed", e);
       setModelStatus(`OSM render error: ${String(e?.message || e)}`);
       setBaseModelReady(false);
     }
   }
+
+  const buildCityMeshesJson = () => {
+    const groups = groupsRef.current;
+    const roots = [groups?.buildings, groups?.roads, groups?.parks, groups?.water].filter(Boolean);
+
+    const meshes = [];
+    const pos = new THREE.Vector3();
+
+    for (const root of roots) {
+      root.updateMatrixWorld(true);
+      root.traverse((obj) => {
+        if (!obj || !obj.isMesh) return;
+        const geom = obj.geometry;
+        if (!geom || !geom.attributes || !geom.attributes.position) return;
+
+        const positionAttr = geom.attributes.position;
+        const indexArr = geom.index ? geom.index.array : null;
+
+        const vcount = positionAttr.count;
+        if (!vcount || vcount < 3) return;
+
+        const vertices = new Array(vcount * 3);
+        for (let i = 0; i < vcount; i++) {
+          pos.fromBufferAttribute(positionAttr, i);
+          obj.localToWorld(pos);
+          vertices[i * 3 + 0] = pos.x;
+          vertices[i * 3 + 1] = pos.y;
+          vertices[i * 3 + 2] = pos.z;
+        }
+
+        const faces = [];
+        if (indexArr && indexArr.length >= 3) {
+          for (let i = 0; i + 2 < indexArr.length; i += 3) {
+            faces.push(indexArr[i + 0], indexArr[i + 1], indexArr[i + 2]);
+          }
+        } else {
+          const triCount = Math.floor(vcount / 3);
+          for (let t = 0; t < triCount; t++) {
+            faces.push(t * 3 + 0, t * 3 + 1, t * 3 + 2);
+          }
+        }
+
+        if (faces.length < 3) return;
+        meshes.push({ vertices, faces });
+      });
+    }
+
+    return { meshes };
+  };
+
+  const buildCityMeshesJsonAsync = async () => {
+    const groups = groupsRef.current;
+    const roots = [groups?.buildings, groups?.roads, groups?.parks, groups?.water].filter(Boolean);
+
+    const meshes = [];
+    const pos = new THREE.Vector3();
+
+    let visited = 0;
+    for (const root of roots) {
+      root.updateMatrixWorld(true);
+      const stack = [root];
+      while (stack.length) {
+        const obj = stack.pop();
+        visited += 1;
+        if (visited % 400 === 0) {
+          await new Promise((r) => window.setTimeout(r, 0));
+        }
+
+        try {
+          const children = obj?.children;
+          if (Array.isArray(children) && children.length) {
+            for (let i = 0; i < children.length; i++) stack.push(children[i]);
+          }
+        } catch {
+          // ignore
+        }
+
+        if (!obj || !obj.isMesh) continue;
+        const geom = obj.geometry;
+        if (!geom || !geom.attributes || !geom.attributes.position) continue;
+
+        const positionAttr = geom.attributes.position;
+        const indexArr = geom.index ? geom.index.array : null;
+
+        const vcount = positionAttr.count;
+        if (!vcount || vcount < 3) continue;
+
+        const vertices = new Array(vcount * 3);
+        for (let i = 0; i < vcount; i++) {
+          pos.fromBufferAttribute(positionAttr, i);
+          obj.localToWorld(pos);
+          vertices[i * 3 + 0] = pos.x;
+          vertices[i * 3 + 1] = pos.y;
+          vertices[i * 3 + 2] = pos.z;
+        }
+
+        const faces = [];
+        if (indexArr && indexArr.length >= 3) {
+          for (let i = 0; i + 2 < indexArr.length; i += 3) {
+            faces.push(indexArr[i + 0], indexArr[i + 1], indexArr[i + 2]);
+          }
+        } else {
+          const triCount = Math.floor(vcount / 3);
+          for (let t = 0; t < triCount; t++) {
+            faces.push(t * 3 + 0, t * 3 + 1, t * 3 + 2);
+          }
+        }
+
+        if (faces.length < 3) continue;
+        meshes.push({ vertices, faces });
+      }
+    }
+
+    return { meshes };
+  };
+
+  const runCityAnalyzeCompute = async ({ bbox } = {}) => {
+    analyzeSeqRef.current += 1;
+    const seq = analyzeSeqRef.current;
+
+    console.log("[Analyze] runCityAnalyzeCompute start", { seq, bbox });
+
+    try {
+      analyzeAbortRef.current?.abort?.();
+    } catch {
+      // ignore
+    }
+
+    const controller = new AbortController();
+    analyzeAbortRef.current = controller;
+
+    setModelStatus("Analyze: building city payload...");
+
+    let jsonText = "";
+    try {
+      await new Promise((r) => window.setTimeout(r, 0));
+      if (seq !== analyzeSeqRef.current) return;
+      const features = Array.isArray(lastOsmFeaturesRef.current) ? lastOsmFeaturesRef.current : [];
+      const payload = { type: "FeatureCollection", features };
+      jsonText = JSON.stringify(payload);
+    } catch (e) {
+      setModelStatus(`Analyze: payload build failed: ${String(e?.message || e)}`);
+      return;
+    }
+
+    console.log("[Analyze] payload built", { seq, bytes: jsonText.length });
+
+    try {
+      lastCityJsonRef.current = jsonText;
+      setHasLastCityJson(true);
+    } catch {
+      // ignore
+    }
+
+    try {
+      const isDev = !!import.meta?.env?.DEV;
+      if (isDev && typeof window !== "undefined") {
+        downloadCityJsonText(jsonText);
+        console.log("[Analyze] payload downloaded", { seq, bytes: jsonText.length });
+      }
+    } catch {
+      // ignore
+    }
+
+    if (seq !== analyzeSeqRef.current) return;
+
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+
+    let geojsonUrl = "";
+    try {
+      setModelStatus("Analyze: uploading GeoJSON...");
+      const upRes = await fetch("/gh-geojson-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ geojsonText: jsonText }),
+        signal: controller.signal,
+      });
+      const upText = await upRes.text();
+      if (seq !== analyzeSeqRef.current) return;
+      let up = null;
+      try {
+        up = upText ? JSON.parse(upText) : null;
+      } catch {
+        up = null;
+      }
+      if (upRes.ok && up?.ok && typeof up?.url === "string" && up.url) {
+        geojsonUrl = up.url.startsWith("http") ? up.url : `${origin}${up.url}`;
+      } else {
+        console.warn("[Analyze] geojson upload failed", { status: upRes.status, body: upText?.slice?.(0, 200) });
+      }
+    } catch {
+      // ignore upload failures; fall back to inline json
+    }
+
+    const pointer = `${origin}/gh/unnamedC.gh?__cb=${Date.now()}`;
+
+    console.log("[Analyze] compute pointer", { seq, pointer });
+
+    const solvePayload = {
+      pointer,
+      values: [
+        {
+          ParamName: "RH_IN:OSM_GEOJSON",
+          InnerTree: {
+            "{ 0; }": [
+              {
+                type: "System.String",
+                data: geojsonUrl || jsonText,
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    setModelStatus("Analyze: sending to compute...");
+
+    try {
+      console.log("[Analyze] compute request", { seq, url: "/compute/grasshopper" });
+      const res = await fetch("/compute/grasshopper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(solvePayload),
+        signal: controller.signal,
+      });
+
+      const text = await res.text();
+      if (seq !== analyzeSeqRef.current) return;
+
+      const floatingMeshGuid = "ba1211cd-0fac-4e8c-88d7-662d4de477cc";
+      const hasFloatingMeshWarning =
+        typeof text === "string" && (text.includes(floatingMeshGuid) || text.toLowerCase().includes("floating parameter mesh"));
+
+      let schema = null;
+      try {
+        schema = JSON.parse(text);
+      } catch {
+        schema = null;
+      }
+
+      let geoItemCount = null;
+      let rhOutItemCount = null;
+      try {
+        const values = schema?.values;
+        const geoItems = extractParamItems(values, "Geo");
+        const rhOutItems = extractParamItems(values, "RH_OUT");
+        geoItemCount = Array.isArray(geoItems) ? geoItems.length : 0;
+        rhOutItemCount = Array.isArray(rhOutItems) ? rhOutItems.length : 0;
+      } catch {
+        geoItemCount = null;
+        rhOutItemCount = null;
+      }
+
+      if (!res.ok) {
+        setModelStatus(`Analyze: compute failed (${res.status})`);
+      } else {
+        const extra =
+          geoItemCount == null && rhOutItemCount == null
+            ? ""
+            : ` (Geo: ${geoItemCount ?? "?"}, RH_OUT: ${rhOutItemCount ?? "?"})`;
+        const warnSuffix = hasFloatingMeshWarning ? " (warn: floating Mesh)" : "";
+        setModelStatus(`Analyze: done${extra}${warnSuffix}`);
+      }
+
+      try {
+        window.dispatchEvent(
+          new CustomEvent("analyze:result", {
+            detail: {
+              ok: !!res.ok,
+              status: res.status,
+              bbox: Array.isArray(bbox) ? bbox : null,
+              geoItemCount,
+              rhOutItemCount,
+              hasFloatingMeshWarning,
+              schema,
+              raw: text,
+            },
+          })
+        );
+      } catch {
+        // ignore
+      }
+    } catch (e) {
+      const name = String(e?.name || "");
+      if (name === "AbortError") return;
+      setModelStatus(`Analyze: request error: ${String(e?.message || e)}`);
+    }
+  };
 
   useEffect(() => {
     const onGh = (ev) => {
@@ -2459,10 +2798,21 @@ function RhinoViewer() {
   useEffect(() => {
     const handler = (event) => {
       const data = event?.data;
-      if (!data || data.type !== "cadmapper:bbox" || !Array.isArray(data.bbox)) return;
+      if (!data || !Array.isArray(data.bbox)) return;
+      const isBbox = data.type === "cadmapper:bbox";
+      const isAnalyze = data.type === "cadmapper:analyze";
+      if (!isBbox && !isAnalyze) return;
       const bbox = data.bbox;
       if (bbox.length !== 4) return;
-      console.log("[Map] bbox received", bbox);
+      console.log("[Map] bbox received", { type: data.type, bbox });
+
+      if (isAnalyze) {
+        try {
+          setModelStatus("Analyze: requested (waiting for city load)...");
+        } catch {
+          // ignore
+        }
+      }
 
       // New city input invalidates any previously computed Grasshopper overlay.
       try {
@@ -2508,6 +2858,11 @@ function RhinoViewer() {
           // ignore
         }
         return;
+      }
+
+      if (isAnalyze) {
+        console.log("[Analyze] request received", { bbox });
+        pendingAnalyzeRef.current = { bbox };
       }
       renderBbox(bbox);
     };
@@ -2595,6 +2950,29 @@ function RhinoViewer() {
         <div style={{ fontSize: 12, opacity: 0.85 }}>
           City: {baseModelReady ? "ready" : "not loaded"}
         </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              downloadCityJsonText(lastCityJsonRef.current);
+            } catch {
+              // ignore
+            }
+          }}
+          disabled={!hasLastCityJson}
+          style={{
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.15)",
+            background: "rgba(17,24,39,0.8)",
+            color: "#e5e7eb",
+            cursor: hasLastCityJson ? "pointer" : "not-allowed",
+            opacity: hasLastCityJson ? 1 : 0.5,
+          }}
+        >
+          Download JSON
+        </button>
 
         <button
           type="button"

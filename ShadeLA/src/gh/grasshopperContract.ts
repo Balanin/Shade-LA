@@ -30,6 +30,23 @@ function findTree(values: any[], name: string): any | null {
   return null;
 }
 
+export function extractParamItems(values: unknown, paramName: string): any[] {
+  const arr = asArray<SchemaTree>(values);
+  const tree = findTree(arr as any[], paramName);
+  if (!tree) return [];
+
+  const inner = getInnerTree(tree);
+  if (!inner || typeof inner !== "object") return [];
+
+  const out: any[] = [];
+  for (const k of Object.keys(inner)) {
+    const items = (inner as any)[k];
+    if (!Array.isArray(items)) continue;
+    for (const it of items) out.push(it);
+  }
+  return out;
+}
+
 export function parseBooleanOutput(tree: unknown): boolean {
   const t: any = tree;
   const inner = getInnerTree(t);
@@ -97,20 +114,7 @@ export function parseMetaOutput(tree: unknown): Record<string, unknown> | null {
 }
 
 export function extractRhOutMeshItems(values: unknown): any[] {
-  const arr = asArray<SchemaTree>(values);
-  const rhOut = findTree(arr as any[], "RH_OUT");
-  if (!rhOut) return [];
-
-  const inner = getInnerTree(rhOut);
-  if (!inner || typeof inner !== "object") return [];
-
-  const out: any[] = [];
-  for (const k of Object.keys(inner)) {
-    const items = (inner as any)[k];
-    if (!Array.isArray(items)) continue;
-    for (const it of items) out.push(it);
-  }
-  return out;
+  return extractParamItems(values, "RH_OUT");
 }
 
 export function parseGrasshopperOutputs(schema: Schema | null | undefined): ParsedGrasshopperResult {

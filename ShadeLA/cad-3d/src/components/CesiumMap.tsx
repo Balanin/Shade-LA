@@ -553,7 +553,7 @@ export default function CesiumMap({
               try {
                 if (typeof window !== "undefined" && window.parent && window.parent !== window) {
                   window.parent.postMessage(
-                    { type: "cadmapper:bbox", bbox: [west, south, east, north] },
+                    { type: "cadmapper:analyze", bbox: [west, south, east, north] },
                     "*"
                   );
                 }
