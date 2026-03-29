@@ -111,6 +111,7 @@ function GrasshopperRenderPanel() {
   const lastSchemaRef = useRef(null);
   const rhinoModuleRef = useRef(null);
   const lastRhOutReadyRef = useRef(null);
+  const geoMeshGroupRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,6 +236,14 @@ function GrasshopperRenderPanel() {
       controls.minPolarAngle = 0.05;
       controls.maxPolarAngle = Math.PI - 0.05;
 
+      // Zoom towards mouse pointer (when supported by current three.js OrbitControls).
+      // This makes wheel zoom feel much more natural for inspection.
+      try {
+        if ("zoomToCursor" in controls) controls.zoomToCursor = true;
+      } catch {
+        // ignore
+      }
+
       const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
       scene.add(ambientLight);
 
@@ -294,6 +303,15 @@ function GrasshopperRenderPanel() {
       const controls = controlsRef.current;
       const group = curveGroupRef.current;
       if (!scene || !camera || !controls || !group) return false;
+
+      // Match rotation controls used for OBJ rendering.
+      try {
+        group.rotation.x = THREE.MathUtils.degToRad(rotDeg.x);
+        group.rotation.y = THREE.MathUtils.degToRad(rotDeg.y);
+        group.rotation.z = THREE.MathUtils.degToRad(rotDeg.z);
+      } catch {
+        // ignore
+      }
 
       while (group.children.length) {
         const child = group.children.pop();
@@ -439,7 +457,7 @@ function GrasshopperRenderPanel() {
       const center = bbox.getCenter(new THREE.Vector3());
       const size = bbox.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
-      const dist = maxDim * 2.2;
+      const dist = maxDim * 1.35;
       viewCenterRef.current.copy(center);
       viewDistRef.current = dist;
       camera.near = Math.max(0.01, maxDim / 1000);
@@ -447,11 +465,317 @@ function GrasshopperRenderPanel() {
       camera.updateProjectionMatrix();
       camera.position.set(center.x + dist, center.y + dist, center.z + dist);
       controls.target.copy(center);
+      controls.minDistance = Math.max(0.01, maxDim * 0.05);
+      controls.maxDistance = Math.max(10, dist * 50);
       controls.update();
 
       return any;
     };
-  }, [ensureInteractiveViewer]);
+  }, [ensureInteractiveViewer, rotDeg.x, rotDeg.y, rotDeg.z]);
+
+  const setGeoInViewer = useMemo(() => {
+    return (schema) => {
+      const ok = ensureInteractiveViewer();
+      if (!ok) return false;
+
+      const rhino = rhinoModuleRef.current;
+      if (!rhino) return false;
+
+      const scene = sceneRef.current;
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      if (!scene || !camera || !controls) return false;
+
+      if (geoMeshGroupRef.current) {
+        try {
+          scene.remove(geoMeshGroupRef.current);
+        } catch {
+          // ignore
+        }
+        try {
+          geoMeshGroupRef.current.traverse((obj) => {
+            obj.geometry?.dispose?.();
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            for (const m of mats) m?.dispose?.();
+          });
+        } catch {
+          // ignore
+        }
+        geoMeshGroupRef.current = null;
+      }
+
+      const values = Array.isArray(schema?.values) ? schema.values : [];
+      const geoTree = values.find((v) => String(v?.ParamName || "") === "geo" || String(v?.ParamName || "") === "Geo");
+      const inner = geoTree?.InnerTree;
+      if (!inner || typeof inner !== "object") return false;
+
+      const group = new THREE.Group();
+      group.name = "gh-geo";
+      // Match rotation controls used for OBJ rendering.
+      try {
+        group.rotation.x = THREE.MathUtils.degToRad(rotDeg.x);
+        group.rotation.y = THREE.MathUtils.degToRad(rotDeg.y);
+        group.rotation.z = THREE.MathUtils.degToRad(rotDeg.z);
+      } catch {
+        // ignore
+      }
+      scene.add(group);
+      geoMeshGroupRef.current = group;
+
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xff7a00,
+        metalness: 0.1,
+        roughness: 0.7,
+        side: THREE.DoubleSide,
+        transparent: opacity < 1.0,
+        opacity,
+      });
+
+      const normalizeMeshList = (res) => {
+        if (!res) return [];
+        if (Array.isArray(res)) return res;
+        if (typeof res.count === "number" && typeof res.get === "function") {
+          const out = [];
+          for (let i = 0; i < res.count; i++) out.push(res.get(i));
+          return out;
+        }
+        if (typeof res.length === "number") return Array.from(res);
+        return [];
+      };
+
+      const getMeshingParams = () => {
+        try {
+          const mp = rhino.MeshingParameters;
+          if (!mp) return null;
+          if (mp.default) return mp.default;
+          if (mp.defaultParameters) return mp.defaultParameters;
+          if (typeof mp.createDefault === "function") return mp.createDefault();
+        } catch {
+          // ignore
+        }
+        return null;
+      };
+
+      const getRenderMeshType = () => {
+        const mt = rhino?.MeshType;
+        if (!mt) return 0;
+        return mt.Render ?? mt.render ?? mt.Analysis ?? mt.analysis ?? 0;
+      };
+
+      const tryMeshFromBrep = (brep) => {
+        if (!brep) return [];
+        const mp = getMeshingParams();
+        const meshType = getRenderMeshType();
+
+        try {
+          const fn = rhino?.Mesh?.createFromBrep;
+          if (typeof fn === "function") {
+            const res = mp ? fn(brep, mp) : fn(brep);
+            const meshes = normalizeMeshList(res);
+            if (meshes.length) return meshes;
+          }
+        } catch {
+          // ignore
+        }
+
+        try {
+          if (typeof brep.getMeshes === "function") {
+            const res = brep.getMeshes(meshType);
+            const meshes = normalizeMeshList(res);
+            if (meshes.length) return meshes;
+          }
+        } catch {
+          // ignore
+        }
+
+        try {
+          if (typeof brep.toBrep === "function") {
+            const b2 = brep.toBrep();
+            if (b2) return tryMeshFromBrep(b2);
+          }
+        } catch {
+          // ignore
+        }
+
+        return [];
+      };
+
+      const tryGetMeshes = (obj, typeStr) => {
+        if (!obj) return [];
+
+        try {
+          if (obj instanceof rhino.Mesh) return [obj];
+        } catch {
+          // ignore
+        }
+
+        try {
+          if (obj instanceof rhino.Brep) return tryMeshFromBrep(obj);
+        } catch {
+          // ignore
+        }
+
+        try {
+          if (typeof obj.toBrep === "function") {
+            const brep = obj.toBrep();
+            return tryMeshFromBrep(brep);
+          }
+        } catch {
+          // ignore
+        }
+
+        const t = String(typeStr || "").toLowerCase();
+        if (t.includes("brep")) return tryMeshFromBrep(obj);
+        return [];
+      };
+
+      const vertexToXYZ = (v) => {
+        if (!v) return [0, 0, 0];
+        if (Array.isArray(v)) return [v[0], v[1], v[2]];
+        if (typeof v === "object") {
+          const x = v.x ?? v.X ?? v[0] ?? 0;
+          const y = v.y ?? v.Y ?? v[1] ?? 0;
+          const z = v.z ?? v.Z ?? v[2] ?? 0;
+          return [x, y, z];
+        }
+        return [0, 0, 0];
+      };
+
+      const faceToIndices = (f) => {
+        if (!f) return null;
+        if (Array.isArray(f)) return { a: f[0], b: f[1], c: f[2], d: f[3] };
+        if (typeof f === "object") {
+          const a = f.a ?? f.A ?? f[0];
+          const b = f.b ?? f.B ?? f[1];
+          const c = f.c ?? f.C ?? f[2];
+          const d = f.d ?? f.D ?? f[3];
+          return { a, b, c, d };
+        }
+        return null;
+      };
+
+      let any = false;
+      let bbox = new THREE.Box3();
+      let bboxInit = false;
+
+      for (const branchKey of Object.keys(inner)) {
+        const items = inner[branchKey];
+        if (!Array.isArray(items)) continue;
+
+        for (const item of items) {
+          const type = item?.type ?? item?.Type;
+          const data = item?.data ?? item?.Data;
+          if (!type || data == null) continue;
+
+          let json = data;
+          if (typeof json === "string") {
+            try {
+              json = JSON.parse(json);
+            } catch {
+              // ignore
+            }
+          }
+
+          let obj = null;
+          try {
+            if (typeof rhino?.CommonObject?.decode === "function") obj = rhino.CommonObject.decode(json);
+            else if (typeof rhino?.CommonObject?.fromJSON === "function") obj = rhino.CommonObject.fromJSON(json);
+            else if (typeof rhino?.CommonObject?.FromJSON === "function") obj = rhino.CommonObject.FromJSON(json);
+          } catch {
+            obj = null;
+          }
+          if (!obj) continue;
+
+          const meshes = tryGetMeshes(obj, type);
+          for (const m of meshes || []) {
+            try {
+              const geo = new THREE.BufferGeometry();
+              const verts = m.vertices();
+              const vCount = verts.count;
+              const pos = new Float32Array(vCount * 3);
+              for (let i = 0; i < vCount; i++) {
+                const v = verts.get(i);
+                const xyz = vertexToXYZ(v);
+                pos[i * 3 + 0] = xyz[0];
+                pos[i * 3 + 1] = xyz[1];
+                pos[i * 3 + 2] = xyz[2];
+              }
+              geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+
+              const faces = m.faces();
+              const fCount = faces.count;
+              const indices = [];
+              for (let fi = 0; fi < fCount; fi++) {
+                const raw = faces.get(fi);
+                const f = faceToIndices(raw);
+                if (!f) continue;
+                const a = f.a;
+                const b = f.b;
+                const c = f.c;
+                const d = f.d;
+                if (d === undefined || d === null || d === c) {
+                  indices.push(a, b, c);
+                } else {
+                  indices.push(a, b, c);
+                  indices.push(a, c, d);
+                }
+              }
+              geo.setIndex(indices);
+              geo.computeVertexNormals();
+              geo.computeBoundingBox();
+
+              const mesh = new THREE.Mesh(geo, mat);
+              mesh.castShadow = true;
+              mesh.receiveShadow = true;
+              group.add(mesh);
+              any = true;
+
+              if (geo.boundingBox) {
+                if (!bboxInit) {
+                  bbox.copy(geo.boundingBox);
+                  bboxInit = true;
+                } else {
+                  bbox.union(geo.boundingBox);
+                }
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+
+      // Also try to draw curves if any (re-use the curve extractor on a schema filtered to geo).
+      let anyCurves = false;
+      try {
+        anyCurves = !!setCurvesInViewer({ ...schema, values: [geoTree] });
+      } catch {
+        // ignore
+      }
+
+      // If we got curves but no meshes, that's still a valid render.
+      if (!any && anyCurves) return true;
+
+      if (!any || !bboxInit) return any;
+
+      const center = bbox.getCenter(new THREE.Vector3());
+      const size = bbox.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const dist = maxDim * 1.35;
+      viewCenterRef.current.copy(center);
+      viewDistRef.current = dist;
+      camera.near = Math.max(0.01, maxDim / 1000);
+      camera.far = Math.max(10000, maxDim * 20);
+      camera.updateProjectionMatrix();
+      camera.position.set(center.x + dist, center.y + dist, center.z + dist);
+      controls.target.copy(center);
+      controls.minDistance = Math.max(0.01, maxDim * 0.05);
+      controls.maxDistance = Math.max(10, dist * 50);
+      controls.update();
+
+      return true;
+    };
+  }, [ensureInteractiveViewer, opacity, rotDeg.x, rotDeg.y, rotDeg.z, setCurvesInViewer]);
 
   const setPointsInViewer = useMemo(() => {
     return (schema) => {
@@ -555,7 +879,7 @@ function GrasshopperRenderPanel() {
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
             const maxDim = Math.max(size.x, size.y, size.z) || 1;
-            const dist = maxDim * 2.2;
+            const dist = maxDim * 1.35;
             viewCenterRef.current.copy(center);
             viewDistRef.current = dist;
             camera.near = Math.max(0.01, maxDim / 1000);
@@ -563,6 +887,8 @@ function GrasshopperRenderPanel() {
             camera.updateProjectionMatrix();
             camera.position.set(center.x + dist, center.y + dist, center.z + dist);
             controls.target.copy(center);
+            controls.minDistance = Math.max(0.01, maxDim * 0.05);
+            controls.maxDistance = Math.max(10, dist * 50);
             controls.update();
           }
 
@@ -601,7 +927,7 @@ function GrasshopperRenderPanel() {
         const center = box.getCenter(new THREE.Vector3());
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z) || 1;
-        const dist = maxDim * 2.2;
+        const dist = maxDim * 1.35;
         viewCenterRef.current.copy(center);
         viewDistRef.current = dist;
         camera.near = Math.max(0.01, maxDim / 1000);
@@ -609,6 +935,8 @@ function GrasshopperRenderPanel() {
         camera.updateProjectionMatrix();
         camera.position.set(center.x + dist, center.y + dist, center.z + dist);
         controls.target.copy(center);
+        controls.minDistance = Math.max(0.01, maxDim * 0.05);
+        controls.maxDistance = Math.max(10, dist * 50);
         controls.update();
       }
 
@@ -824,7 +1152,7 @@ function GrasshopperRenderPanel() {
       const worldCenter = worldBox.getCenter(new THREE.Vector3());
       const maxDim = Math.max(worldSize.x, worldSize.y, worldSize.z) || 1;
 
-      const dist = maxDim * 2;
+      const dist = maxDim * 1.35;
       viewCenterRef.current.copy(worldCenter);
       viewDistRef.current = dist;
       camera.near = Math.max(0.01, maxDim / 1000);
@@ -832,6 +1160,8 @@ function GrasshopperRenderPanel() {
       camera.updateProjectionMatrix();
       camera.position.set(worldCenter.x + dist, worldCenter.y + dist, worldCenter.z + dist);
       controls.target.copy(worldCenter);
+      controls.minDistance = Math.max(0.01, maxDim * 0.05);
+      controls.maxDistance = Math.max(10, dist * 50);
       controls.update();
     };
   }, [ensureInteractiveViewer, meshColor, opacity, rotDeg.x, rotDeg.y, rotDeg.z, showNormals, showWireframe, syncNormalsHelper]);
@@ -839,34 +1169,63 @@ function GrasshopperRenderPanel() {
   const applyRotationToMesh = useMemo(() => {
     return (nextRotDeg) => {
       setRotDeg(nextRotDeg);
-      const mesh = meshRef.current;
+
       const scene = sceneRef.current;
       const camera = cameraRef.current;
       const controls = controlsRef.current;
-      if (!mesh || !scene || !camera || !controls) return;
+      if (!scene || !camera || !controls) return;
 
-      mesh.rotation.x = THREE.MathUtils.degToRad(nextRotDeg.x);
-      mesh.rotation.y = THREE.MathUtils.degToRad(nextRotDeg.y);
-      mesh.rotation.z = THREE.MathUtils.degToRad(nextRotDeg.z);
-      mesh.updateMatrixWorld(true);
+      const rx = THREE.MathUtils.degToRad(nextRotDeg.x);
+      const ry = THREE.MathUtils.degToRad(nextRotDeg.y);
+      const rz = THREE.MathUtils.degToRad(nextRotDeg.z);
 
-      if (wireframeRef.current) {
-        wireframeRef.current.rotation.copy(mesh.rotation);
+      const mesh = meshRef.current;
+      if (mesh) {
+        mesh.rotation.set(rx, ry, rz);
+        mesh.updateMatrixWorld(true);
       }
 
-      if (showNormals && normalsHelperRef.current) {
+      try {
+        if (geoMeshGroupRef.current) {
+          geoMeshGroupRef.current.rotation.set(rx, ry, rz);
+          geoMeshGroupRef.current.updateMatrixWorld(true);
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        if (curveGroupRef.current) {
+          curveGroupRef.current.rotation.set(rx, ry, rz);
+          curveGroupRef.current.updateMatrixWorld(true);
+        }
+      } catch {
+        // ignore
+      }
+
+      if (wireframeRef.current && mesh) {
+        wireframeRef.current.rotation.copy(mesh.rotation);
+        wireframeRef.current.updateMatrixWorld(true);
+      }
+
+      if (showNormals) {
         try {
-          normalsHelperRef.current.update();
+          syncNormalsHelper(true);
         } catch {
           // ignore
         }
       }
 
-      const worldBox = new THREE.Box3().setFromObject(mesh);
+      // Refit camera to whatever geometry we have (OBJ mesh, geo meshes, or curves).
+      const targetObj = mesh || geoMeshGroupRef.current || curveGroupRef.current;
+      if (!targetObj) return;
+
+      const worldBox = new THREE.Box3().setFromObject(targetObj);
       const worldSize = worldBox.getSize(new THREE.Vector3());
       const worldCenter = worldBox.getCenter(new THREE.Vector3());
       const maxDim = Math.max(worldSize.x, worldSize.y, worldSize.z) || 1;
-      const dist = maxDim * 2;
+      const dist = maxDim * 1.35;
+
       viewCenterRef.current.copy(worldCenter);
       viewDistRef.current = dist;
       camera.near = Math.max(0.01, maxDim / 1000);
@@ -874,47 +1233,178 @@ function GrasshopperRenderPanel() {
       camera.updateProjectionMatrix();
       camera.position.set(worldCenter.x + dist, worldCenter.y + dist, worldCenter.z + dist);
       controls.target.copy(worldCenter);
+      controls.minDistance = Math.max(0.01, maxDim * 0.05);
+      controls.maxDistance = Math.max(10, dist * 50);
       controls.update();
     };
-  }, [showNormals]);
+  }, [showNormals, syncNormalsHelper]);
 
   const centerAndGround = useMemo(() => {
     return () => {
       const mesh = meshRef.current;
       const camera = cameraRef.current;
       const controls = controlsRef.current;
-      if (!mesh || !camera || !controls) return;
+      if (!camera || !controls) return;
 
-      mesh.updateMatrixWorld(true);
-      const box = new THREE.Box3().setFromObject(mesh);
+      // Prefer OBJ mesh if present (supports grounding). Otherwise fall back to geo/curves.
+      const targetObj = mesh || geoMeshGroupRef.current || curveGroupRef.current;
+      if (!targetObj) return;
+
+      targetObj.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(targetObj);
       const center = box.getCenter(new THREE.Vector3());
       const size = box.getSize(new THREE.Vector3());
-      const minY = box.min.y;
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const dist = maxDim * 1.35;
 
-      // Move model to origin in X/Z and onto the ground plane (minY = 0)
-      mesh.position.x += -center.x;
-      mesh.position.z += -center.z;
-      mesh.position.y += -minY;
-      mesh.updateMatrixWorld(true);
+      // If we have an OBJ mesh, also put it on the ground plane (minY = 0)
+      // and re-center in X/Z so it sits nicely.
+      if (mesh) {
+        const minY = box.min.y;
+        mesh.position.x += -center.x;
+        mesh.position.z += -center.z;
+        mesh.position.y += -minY;
+        mesh.updateMatrixWorld(true);
 
-      const box2 = new THREE.Box3().setFromObject(mesh);
-      const center2 = box2.getCenter(new THREE.Vector3());
-      const size2 = box2.getSize(new THREE.Vector3());
-      const maxDim = Math.max(size2.x, size2.y, size2.z) || 1;
-      const dist = maxDim * 2;
+        const box2 = new THREE.Box3().setFromObject(mesh);
+        const center2 = box2.getCenter(new THREE.Vector3());
+        const size2 = box2.getSize(new THREE.Vector3());
+        const maxDim2 = Math.max(size2.x, size2.y, size2.z) || 1;
+        const dist2 = maxDim2 * 1.35;
+
+        viewCenterRef.current.copy(center2);
+        viewDistRef.current = dist2;
+        camera.near = Math.max(0.01, maxDim2 / 1000);
+        camera.far = Math.max(10000, maxDim2 * 20);
+        camera.updateProjectionMatrix();
+        camera.position.set(center2.x + dist2, center2.y + dist2, center2.z + dist2);
+        controls.target.copy(center2);
+        controls.minDistance = Math.max(0.01, maxDim2 * 0.05);
+        controls.maxDistance = Math.max(10, dist2 * 50);
+        controls.update();
+        return;
+      }
+
+      const geoGroup = geoMeshGroupRef.current;
+      const curveGroup = curveGroupRef.current;
+
+      // Center geometry onto the grid origin.
+      const offset = center.clone().multiplyScalar(-1);
+      try {
+        if (geoGroup) geoGroup.position.add(offset);
+      } catch {
+        // ignore
+      }
+      try {
+        if (curveGroup) curveGroup.position.add(offset);
+      } catch {
+        // ignore
+      }
+
+      try {
+        geoGroup?.updateMatrixWorld?.(true);
+      } catch {
+        // ignore
+      }
+      try {
+        curveGroup?.updateMatrixWorld?.(true);
+      } catch {
+        // ignore
+      }
+
+      // Ground to Y=0.
+      const groundedBox = new THREE.Box3();
+      let groundedInit = false;
+      try {
+        if (geoGroup) {
+          groundedBox.copy(new THREE.Box3().setFromObject(geoGroup));
+          groundedInit = true;
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (curveGroup) {
+          const cb = new THREE.Box3().setFromObject(curveGroup);
+          if (!groundedInit) {
+            groundedBox.copy(cb);
+            groundedInit = true;
+          } else {
+            groundedBox.union(cb);
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!groundedInit) return;
+
+      const minY = groundedBox.min.y;
+      try {
+        if (geoGroup) geoGroup.position.y += -minY;
+      } catch {
+        // ignore
+      }
+      try {
+        if (curveGroup) curveGroup.position.y += -minY;
+      } catch {
+        // ignore
+      }
+
+      try {
+        geoGroup?.updateMatrixWorld?.(true);
+      } catch {
+        // ignore
+      }
+      try {
+        curveGroup?.updateMatrixWorld?.(true);
+      } catch {
+        // ignore
+      }
+
+      // Fit camera to final bbox.
+      const finalBox = new THREE.Box3();
+      let finalInit = false;
+      try {
+        if (geoGroup) {
+          finalBox.copy(new THREE.Box3().setFromObject(geoGroup));
+          finalInit = true;
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (curveGroup) {
+          const cb = new THREE.Box3().setFromObject(curveGroup);
+          if (!finalInit) {
+            finalBox.copy(cb);
+            finalInit = true;
+          } else {
+            finalBox.union(cb);
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!finalInit) return;
+
+      const center2 = finalBox.getCenter(new THREE.Vector3());
+      const size2 = finalBox.getSize(new THREE.Vector3());
+      const maxDim2 = Math.max(size2.x, size2.y, size2.z) || 1;
+      const dist2 = maxDim2 * 1.35;
 
       viewCenterRef.current.copy(center2);
-      viewDistRef.current = dist;
-
-      camera.near = Math.max(0.01, maxDim / 1000);
-      camera.far = Math.max(10000, maxDim * 20);
+      viewDistRef.current = dist2;
+      camera.near = Math.max(0.01, maxDim2 / 1000);
+      camera.far = Math.max(10000, maxDim2 * 20);
       camera.updateProjectionMatrix();
-      camera.position.set(center2.x + dist, center2.y + dist, center2.z + dist);
+      camera.position.set(center2.x + dist2, center2.y + dist2, center2.z + dist2);
       controls.target.copy(center2);
+      controls.minDistance = Math.max(0.01, maxDim2 * 0.05);
+      controls.maxDistance = Math.max(10, dist2 * 50);
       controls.update();
-
-      // keep lints happy (size used for debugging if needed)
-      void size;
+      return;
     };
   }, []);
 
@@ -1077,7 +1567,7 @@ function GrasshopperRenderPanel() {
       const filteredSchema = (() => {
         const values = schema?.values;
         if (!schema || !Array.isArray(values)) return schema;
-        const wanted = new Set(["RH_OUT", "RH_OUT_JSON", "RH_READY", "RH_STATUS", "RH_META"]);
+        const wanted = new Set(["RH_OUT", "RH_OUT_JSON", "RH_READY", "RH_STATUS", "RH_META", "geo", "Geo"]);
         const only = values.filter((v) => wanted.has(String(v?.ParamName || "")));
         return { ...schema, values: only };
       })();
@@ -1085,6 +1575,23 @@ function GrasshopperRenderPanel() {
       lastSchemaRef.current = filteredSchema;
 
       if (token !== extractTokenRef.current) return false;
+
+      try {
+        const hasGeo = Array.isArray(filteredSchema?.values)
+          ? filteredSchema.values.some((v) => String(v?.ParamName || "") === "geo" || String(v?.ParamName || "") === "Geo")
+          : false;
+        if (hasGeo) {
+          setStatus("Rendering geo…");
+          setLastError("");
+          const ok = setGeoInViewer(filteredSchema);
+          if (ok) {
+            setStatus("Ready");
+            return true;
+          }
+        }
+      } catch {
+        // ignore
+      }
 
       if (!exportObj) {
         setStatus("Ready");
@@ -1315,7 +1822,7 @@ function GrasshopperRenderPanel() {
 
           <button
             type="button"
-            onClick={() => applyRotationToMesh({ x: 0, y: 0, z: 0 })}
+            onClick={() => applyRotationToMesh({ x: -90, y: 0, z: 0 })}
             style={{
               padding: "6px 10px",
               borderRadius: 8,

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import rhino3dm from "rhino3dm/rhino3dm.module.js";
 import rhino3dmWasmUrl from "rhino3dm/rhino3dm.wasm?url";
@@ -13,9 +13,81 @@ function RhinoViewer() {
   const [hasLastCityJson, setHasLastCityJson] = useState(false);
   const [rhinoReady, setRhinoReady] = useState(false);
   const [baseModelReady, setBaseModelReady] = useState(false);
+  const [buildingMenu, setBuildingMenu] = useState(null);
+  const [buildingHeightM, setBuildingHeightM] = useState(10);
+  const selectedBuildingRef = useRef(null);
+  const buildingMenuRef = useRef(null);
+  const viewerRootRef = useRef(null);
   const lastGoodGhSchemaRef = useRef(null);
   const lastGhContractRef = useRef({ ready: false, status: "idle", meta: null, meshItemCount: 0 });
   const waitingForCanvasSizeRef = useRef(false);
+
+  useEffect(() => {
+    if (!buildingMenu) return;
+
+    const onKeyDown = (ev) => {
+      if (ev.key === "Escape") {
+        selectedBuildingRef.current = null;
+        setBuildingMenu(null);
+      }
+    };
+
+    const onDocMouseDown = (ev) => {
+      const menuEl = buildingMenuRef.current;
+      if (menuEl && menuEl.contains(ev.target)) return;
+      selectedBuildingRef.current = null;
+      setBuildingMenu(null);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("mousedown", onDocMouseDown);
+    };
+  }, [buildingMenu]);
+
+  const applySelectedBuildingHeightMeters = useMemo(() => {
+    return (nextHeightM) => {
+      const mesh = selectedBuildingRef.current;
+      if (!mesh) return;
+      const valM = Number(nextHeightM);
+      if (!Number.isFinite(valM)) return;
+
+      const clampedM = Math.max(0.2, Math.min(500, valM));
+      const targetUnits = clampedM / SCENE_UNITS_TO_METERS;
+
+      try {
+        mesh.updateMatrixWorld(true);
+        const bb = new THREE.Box3().setFromObject(mesh);
+        const curUnits = Math.max(0, (bb.max.y ?? 0) - (bb.min.y ?? 0));
+        const curScaleY = Number(mesh.scale?.y ?? 1) || 1;
+        if (!mesh.userData) mesh.userData = {};
+        if (!Number.isFinite(mesh.userData.baseHeightUnits) || mesh.userData.baseHeightUnits <= 0) {
+          const base = curUnits / curScaleY;
+          mesh.userData.baseHeightUnits = Number.isFinite(base) && base > 0 ? base : curUnits || 1;
+        }
+
+        const baseUnits = Number(mesh.userData.baseHeightUnits) || 1;
+        const nextScaleY = Math.max(0.05, Math.min(100, targetUnits / baseUnits));
+        mesh.scale.y = nextScaleY;
+      } catch {
+        // ignore
+      }
+
+      // Keep base on ground after scaling (Y-up scene).
+      try {
+        mesh.updateMatrixWorld(true);
+        const bb = new THREE.Box3().setFromObject(mesh);
+        if (Number.isFinite(bb.min.y)) {
+          mesh.position.y += -bb.min.y;
+          mesh.updateMatrixWorld(true);
+        }
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
   const initAttemptedRef = useRef(false);
   const canvasRef = useRef(null);
   const rendererRef = useRef(null);
@@ -427,6 +499,37 @@ function RhinoViewer() {
       canvas.addEventListener("wheel", handleWheel, { passive: false });
 
       const raycaster = new THREE.Raycaster();
+
+      const findTaggedBuilding = (obj) => {
+        let cur = obj;
+        while (cur) {
+          if (cur?.userData?.isOsmBuilding) return cur;
+          cur = cur.parent;
+        }
+        return null;
+      };
+
+      const pickBuildingAtEvent = (ev) => {
+        if (!cameraRef.current || !canvasRef.current) return null;
+        const buildingsRoot = groupsRef.current?.buildings;
+        if (!buildingsRoot) return null;
+
+        const cameraNow = cameraRef.current;
+        const canvasEl = canvasRef.current;
+        const rect = canvasEl.getBoundingClientRect();
+        const ndc = new THREE.Vector2(
+          ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+          -(((ev.clientY - rect.top) / rect.height) * 2 - 1)
+        );
+        raycaster.setFromCamera(ndc, cameraNow);
+        const hits = raycaster.intersectObjects([buildingsRoot], true);
+        if (!hits || hits.length < 1) return null;
+        for (const h of hits) {
+          const b = findTaggedBuilding(h?.object);
+          if (b) return b;
+        }
+        return null;
+      };
       const handleDoubleClick = (ev) => {
         if (!cameraRef.current || !sceneRef.current || !canvasRef.current) return;
         const cameraNow = cameraRef.current;
@@ -562,7 +665,54 @@ function RhinoViewer() {
         lastPosRef.current = { x: ev.clientX, y: ev.clientY };
       };
 
-      const handleMouseUp = () => {
+      const handleMouseUp = (ev) => {
+        // If this was a click (not a drag) - open building context menu.
+        try {
+          if (!drawModeRef.current && lastPosRef.current && ev) {
+            const dx = Math.abs(ev.clientX - lastPosRef.current.x);
+            const dy = Math.abs(ev.clientY - lastPosRef.current.y);
+            const isClick = dx <= 3 && dy <= 3;
+            if (isClick) {
+              const b = pickBuildingAtEvent(ev);
+              if (b) {
+                selectedBuildingRef.current = b;
+                try {
+                  b.updateMatrixWorld(true);
+                  const bb = new THREE.Box3().setFromObject(b);
+                  const curUnits = Math.max(0, (bb.max.y ?? 0) - (bb.min.y ?? 0));
+                  const curScaleY = Number(b.scale?.y ?? 1) || 1;
+                  if (!b.userData) b.userData = {};
+                  if (!Number.isFinite(b.userData.baseHeightUnits) || b.userData.baseHeightUnits <= 0) {
+                    const base = curUnits / curScaleY;
+                    b.userData.baseHeightUnits = Number.isFinite(base) && base > 0 ? base : curUnits || 1;
+                  }
+                  const curM = curUnits * SCENE_UNITS_TO_METERS;
+                  setBuildingHeightM(Number.isFinite(curM) && curM > 0 ? curM : 10);
+                } catch {
+                  setBuildingHeightM(10);
+                }
+                let x = ev.clientX;
+                let y = ev.clientY;
+                try {
+                  const root = viewerRootRef.current;
+                  const rect = root?.getBoundingClientRect?.();
+                  if (rect) {
+                    x = ev.clientX - rect.left;
+                    y = ev.clientY - rect.top;
+                  }
+                } catch {
+                  // ignore
+                }
+                setBuildingMenu({ x, y });
+              } else {
+                selectedBuildingRef.current = null;
+                setBuildingMenu(null);
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
         isDraggingRef.current = false;
         lastPosRef.current = null;
       };
@@ -2233,6 +2383,12 @@ function RhinoViewer() {
         });
 
         const mesh = new THREE.Mesh(extrudeGeom, mat);
+        mesh.userData = {
+          isOsmBuilding: true,
+          osmHeight: height,
+          baseHeightUnits: height,
+          osmProps: props,
+        };
         buildingsGroup.add(mesh);
 
         extrudeGeom.computeBoundingBox();
@@ -2648,6 +2804,17 @@ function RhinoViewer() {
         schema = null;
       }
 
+      // Feed the shared Grasshopper render pipeline (panel + any listeners).
+      // This allows the GRASSHOPPER RENDER UI to display the result from unnamedC.gh.
+      try {
+        const outCount = Array.isArray(schema?.values) ? schema.values.length : 0;
+        if (schema && outCount > 0) {
+          window.dispatchEvent(new CustomEvent("grasshopper:result", { detail: { schema } }));
+        }
+      } catch {
+        // ignore
+      }
+
       let geoItemCount = null;
       let rhOutItemCount = null;
       try {
@@ -2877,7 +3044,7 @@ function RhinoViewer() {
   const currentPts = drawStateRef.current.current.length;
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%", minHeight: 280 }}>
+    <div ref={viewerRootRef} style={{ position: "relative", width: "100%", height: "100%", minHeight: 280 }}>
       {webglError ? (
         <div
           style={{
@@ -2904,6 +3071,108 @@ function RhinoViewer() {
           </div>
         </div>
       ) : null}
+
+      {buildingMenu ? (
+        <div
+          ref={buildingMenuRef}
+          style={{
+            position: "absolute",
+            zIndex: 30,
+            left: Math.max(8, buildingMenu.x + 8),
+            top: Math.max(8, buildingMenu.y + 8),
+            minWidth: 220,
+            padding: 10,
+            borderRadius: 10,
+            background: "rgba(10, 18, 30, 0.9)",
+            border: "1px solid rgba(255,255,255,0.14)",
+            color: "rgba(230,240,255,0.95)",
+            boxShadow: "0 12px 30px rgba(0,0,0,0.45)",
+            backdropFilter: "blur(6px)",
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>Building</div>
+            <button
+              type="button"
+              onClick={() => {
+                selectedBuildingRef.current = null;
+                setBuildingMenu(null);
+              }}
+              style={{
+                padding: "2px 8px",
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.15)",
+                background: "rgba(17,24,39,0.8)",
+                color: "#e5e7eb",
+                cursor: "pointer",
+              }}
+            >
+              ✕
+            </button>
+          </div>
+
+          <div style={{ marginTop: 8, fontSize: 11, opacity: 0.9 }}>
+            height (m): {Number(buildingHeightM).toFixed(2)}
+          </div>
+
+          <input
+            type="range"
+            min={0.2}
+            max={200}
+            step={0.1}
+            value={buildingHeightM}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setBuildingHeightM(v);
+              applySelectedBuildingHeightMeters(v);
+            }}
+            style={{ width: "100%", marginTop: 6 }}
+          />
+
+          <input
+            type="number"
+            min={0.2}
+            max={500}
+            step={0.1}
+            value={buildingHeightM}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (!Number.isFinite(v)) return;
+              setBuildingHeightM(v);
+              applySelectedBuildingHeightMeters(v);
+            }}
+            style={{
+              width: "100%",
+              marginTop: 8,
+              padding: "6px 8px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "rgba(17,24,39,0.8)",
+              color: "#e5e7eb",
+              outline: "none",
+            }}
+          />
+
+          <div style={{ marginTop: 8, fontSize: 10, opacity: 0.75, maxHeight: 80, overflow: "auto" }}>
+            {(() => {
+              const p = selectedBuildingRef.current?.userData?.osmProps;
+              if (!p) return null;
+              const name = p.name || p["addr:housename"];
+              const h = p.height || p["building:height"];
+              const levels = p.levels || p["building:levels"];
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {name ? <div>name: {String(name)}</div> : null}
+                  {h ? <div>osm height: {String(h)}</div> : null}
+                  {levels ? <div>osm levels: {String(levels)}</div> : null}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      ) : null}
+
       <div
         style={{
           position: "absolute",
