@@ -1712,350 +1712,47 @@ function GrasshopperRenderPanel() {
 
   return (
     <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: 10 }}>
-        <div style={{ fontSize: 12, color: "rgba(229,231,235,0.9)" }}>{status}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button
-            type="button"
-            onClick={() => exportRhOutNow()}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(15,118,110,0.85)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Export RH_OUT
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setAutoExportRhOut((v) => !v)}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: autoExportRhOut ? "rgba(15,118,110,0.85)" : "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Auto Export: {autoExportRhOut ? "On" : "Off"}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => applyViewPreset("reset")}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Reset View
-          </button>
-
-          <button
-            type="button"
-            onClick={() => centerAndGround()}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Center & Ground
-          </button>
-
-          <button
-            type="button"
-            onClick={() => applyViewPreset("top")}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Top View
-          </button>
-
-          <button
-            type="button"
-            onClick={() => applyViewPreset("front")}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Front View
-          </button>
-
-          <button
-            type="button"
-            onClick={() => applyRotationToMesh({ x: rotDeg.x, y: rotDeg.y - 90, z: rotDeg.z })}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Rotate Left
-          </button>
-
-          <button
-            type="button"
-            onClick={() => applyRotationToMesh({ x: -90, y: 0, z: 0 })}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Lay Flat
-          </button>
-
-          <button
-            type="button"
-            onClick={() => applyRotationToMesh({ x: -90, y: 0, z: 0 })}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Z-up → Y-up
-          </button>
-
-          <button
-            type="button"
-            onClick={() => applyRotationToMesh({ x: rotDeg.x, y: rotDeg.y + 90, z: rotDeg.z })}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Rotate Right
-          </button>
-
-          <button
-            type="button"
-            onClick={() => applyRotationToMesh({ x: 0, y: 0, z: 0 })}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Reset Rotation
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (!lastObjText) return;
-              try {
-                const blob = new Blob([lastObjText], { type: "text/plain" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `grasshopper-${Date.now()}.obj`;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-              } catch {
-                // ignore
-              }
-            }}
-            disabled={!lastObjText}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: lastObjText ? "pointer" : "not-allowed",
-              opacity: lastObjText ? 1 : 0.6,
-            }}
-          >
-            Download OBJ
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setShowWireframe((v) => {
-                const next = !v;
-                if (wireframeRef.current) wireframeRef.current.visible = next;
-                return next;
-              });
-            }}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Toggle Wireframe
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setShowAxes((v) => {
-                const next = !v;
-                if (axesHelperRef.current) axesHelperRef.current.visible = next;
-                return next;
-              });
-            }}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Toggle Axes
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setShowGrid((v) => {
-                const next = !v;
-                if (gridHelperRef.current) gridHelperRef.current.visible = next;
-                return next;
-              });
-            }}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Toggle Grid
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setShowNormals((v) => {
-                const next = !v;
-                syncNormalsHelper(next);
-                return next;
-              });
-            }}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Toggle Normals
-          </button>
-
-          <button
-            type="button"
-            onClick={async () => {
-              if (lastObjText) {
-                try {
-                  setStatus("Rendering OBJ…");
-                  setLastError("");
-                  setObjInViewer(lastObjText);
-                  setStatus("Ready");
-                  return;
-                } catch (e) {
-                  setLastError(String(e?.message || e));
-                  setStatus("Error");
-                  return;
-                }
-              }
-
-              try {
-                await waitForRhOutOverlay({ timeoutMs: 30000 });
-              } catch {
-                // ignore
-              }
-
-              const res = await requestObjFromViewer({ paramNames: ["RH_OUT"] });
-              if (res?.ok && res.objText) {
-                try {
-                  setStatus("Rendering OBJ…");
-                  setLastError("");
-                  setLastObjText(res.objText);
-                  setObjInViewer(res.objText);
-                  setStatus("Ready");
-                  return;
-                } catch (e) {
-                  setLastError(String(e?.message || e));
-                  setStatus("Error");
-                  return;
-                }
-              }
-
-              const msg = res?.error ? String(res.error) : "OBJ export failed";
-              setLastError(msg);
-              requestSnapshot();
-            }}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(17,24,39,0.8)",
-              color: "#e5e7eb",
-              cursor: "pointer",
-            }}
-          >
-            Refresh
-          </button>
-        </div>
-      </div>
-
       <div style={{ flex: 1, minHeight: 0, position: "relative", background: "rgba(0,0,0,0.22)" }}>
+        <div
+          style={{
+            position: "absolute",
+            top: 10,
+            left: 10,
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(10, 18, 30, 0.55)",
+            color: "rgba(229,231,235,0.92)",
+            fontSize: 12,
+            zIndex: 2,
+            pointerEvents: "none",
+            userSelect: "none",
+            backdropFilter: "blur(6px)",
+          }}
+        >
+          {status}
+        </div>
         {lastError ? (
-          <div style={{ padding: 12, fontSize: 12, color: "rgba(248,113,113,0.95)" }}>{lastError}</div>
+          <div
+            style={{
+              position: "absolute",
+              top: 44,
+              left: 10,
+              right: 10,
+              padding: 10,
+              fontSize: 12,
+              color: "rgba(248,113,113,0.95)",
+              zIndex: 2,
+              pointerEvents: "none",
+              userSelect: "none",
+              background: "rgba(10, 18, 30, 0.35)",
+              borderRadius: 8,
+              border: "1px solid rgba(248,113,113,0.22)",
+              backdropFilter: "blur(6px)",
+            }}
+          >
+            {lastError}
+          </div>
         ) : null}
         <div ref={mountRef} style={{ position: "absolute", inset: 0 }} />
       </div>

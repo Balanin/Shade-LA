@@ -1,5 +1,5 @@
 {
-  "ts": 1774643460679,
+  "ts": 1775001511491,
   "payload": {
     "pointer": "http://localhost:5173/gh/unnamed.gh",
     "values": [
@@ -9,15 +9,15 @@
           "{ 0; }": [
             {
               "type": "Rhino.Geometry.PolylineCurve",
-              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAAG7ezwzMW3HAhqK6ZSb+dsAAAAAAAAAAADj9/W2Q32HA1u1LrHxad8AAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAAHBrnDb/fwKAAAAAAAAAAAA=\"}"
+              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAAOC7klZ0sC9AoLymEKXELMAAAAAAAAAAABoBfRGQ7DFAUAEU0rWBHkAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAAKs/ABj/fwKAAAAAAAAAAAA=\"}"
             },
             {
               "type": "Rhino.Geometry.PolylineCurve",
-              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAACglZtLptnDAmn5L0otqeMAAAAAAAAAAAC5kD9qyY2LAasryIP06ecAAAAAAAAAwPQIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAAAStmsD/fwKAAAAAAAAAAAA=\"}"
+              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAAGTOf1YE9jFA2BcbcGmPLMAAAAAAAAAAANYuBUH1BzdAKH4lGrFjIkAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAAIjqBsP/fwKAAAAAAAAAAAA=\"}"
             },
             {
               "type": "Rhino.Geometry.PolylineCurve",
-              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAAHjYOzX5NWXAOLJXI/N/dcAAAAAAAAAAAIByKuqAaWvAUD9adxK6e8AAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAABGotdv/fwKAAAAAAAAAAAA=\"}"
+              "data": "{\"version\":10000,\"archive3dm\":60,\"opennurbs\":-1874554780,\"data\":\"+n8CAIkAAAAAAAAA+/8CABQAAAAAAAAA5tTXTkfp0xG/5QAQgwEi8E6cu9v8/wIAUQAAAAAAAAAQAgAAAJCHi59fcCxAQMJGZ4fq878AAAAAAAAAvRHf1qgjFDpAVDfrkh/0IMAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAPA/AwAAAIjRXZv/fwKAAAAAAAAAAAA=\"}"
             }
           ]
         }

@@ -2,14 +2,16 @@ import React, { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import PowerBIReport from "./components/PowerBIReport";
 import GrasshopperPanel from "./components/GrasshopperPanel";
-import GrasshopperRenderPanel from "./components/GrasshopperRenderPanel";
-import RhinoViewer from "./components/RhinoViewer";
+import TerrainOsmPanel from "./components/TerrainOsmPanel";
+import TerrainOsmViewer from "./components/TerrainOsmViewer";
 import CanopyTreesSection from "./components/CanopyTreesSection";
 import ResourcesSections from "./components/ResourcesSections";
 
 function App() {
   const [selectedArea, setSelectedArea] = useState(null);
   const [mapUnlocked, setMapUnlocked] = useState(false);
+
+  const terrainViewerRef = React.useRef(null);
 
   const [sidebarHidden, setSidebarHidden] = useState(() => {
     try {
@@ -215,15 +217,17 @@ function App() {
                 <h2>Model</h2>
               </div>
               <div className="panel-body">
-                <RhinoViewer />
+                <TerrainOsmViewer ref={terrainViewerRef} />
               </div>
             </section>
 
-            <section className="panel panel-left-secondary">
+            <section className="panel panel-terrain-osm">
               <div className="panel-header">
-                <h2>Panel</h2>
+                <h2>Terrain / OSM</h2>
               </div>
-              <div className="panel-body" />
+              <div className="panel-body">
+                <TerrainOsmPanel viewerRef={terrainViewerRef} />
+              </div>
             </section>
 
             <section className="panel panel-grasshopper">
@@ -232,15 +236,6 @@ function App() {
               </div>
               <div className="panel-body">
                 <GrasshopperPanel />
-              </div>
-            </section>
-
-            <section className="panel panel-gh-render">
-              <div className="panel-header">
-                <h2>Grasshopper render</h2>
-              </div>
-              <div className="panel-body">
-                <GrasshopperRenderPanel />
               </div>
             </section>
           </div>

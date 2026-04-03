@@ -1,0 +1,7 @@
+fastapi>=0.116
+uvicorn[standard]>=0.35
+numpy>=2.3
+ladybug-core>=0.44
+trimesh>=4.7
+httpx>=0.28
+rtree>=1.3

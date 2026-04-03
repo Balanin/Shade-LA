@@ -2732,6 +2732,106 @@ function RhinoViewer() {
 
     const origin = typeof window !== "undefined" ? window.location.origin : "";
 
+    const runBruhCompute = async () => {
+      if (!Array.isArray(bbox) || bbox.length !== 4) return;
+      const [west, south, east, north] = bbox;
+
+      const lat = (Number(south) + Number(north)) / 2;
+      const lon = (Number(west) + Number(east)) / 2;
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+      const metersPerDegLat = 111320;
+      const metersPerDegLon = 111320 * Math.cos((lat * Math.PI) / 180);
+      const dx = Math.abs(Number(east) - Number(west)) * metersPerDegLon;
+      const dy = Math.abs(Number(north) - Number(south)) * metersPerDegLat;
+      const radiusM = Math.max(100, Math.min(100000, Math.ceil(Math.max(dx, dy) / 2)));
+
+      const locationStr = `Site:Location,\nCadMapperAnalyze,\n${lat},      !Latitude\n${lon},     !Longitude\n0,     !Time Zone\n0;       !Elevation`;
+
+      const bruhPointer = `${origin}/gh/BRUH.ghx?__cb=${Date.now()}`;
+      const bruhPayload = {
+        pointer: bruhPointer,
+        values: [
+          {
+            ParamName: "_location",
+            InnerTree: {
+              "{ 0; }": [{ type: "System.String", data: locationStr }],
+            },
+          },
+          {
+            ParamName: "radius_",
+            InnerTree: {
+              "{ 0; }": [{ type: "System.Double", data: String(radiusM) }],
+            },
+          },
+          {
+            ParamName: "mapFolder_",
+            InnerTree: {
+              "{ 0; }": [{ type: "System.String", data: "C:\\dev\\MapWinGIS" }],
+            },
+          },
+          {
+            ParamName: "gismoFolder_",
+            InnerTree: {
+              "{ 0; }": [{ type: "System.String", data: "c:\\gismo" }],
+            },
+          },
+        ],
+      };
+
+      try {
+        console.log("[Analyze] BRUH compute request", { seq, pointer: bruhPointer, lat, lon, radiusM });
+        const res = await fetch("/compute/grasshopper", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(bruhPayload),
+          signal: controller.signal,
+        });
+
+        const text = await res.text();
+        if (seq !== analyzeSeqRef.current) return;
+
+        let schema = null;
+        try {
+          schema = JSON.parse(text);
+        } catch {
+          schema = null;
+        }
+
+        // Map BRUH terrain output into "Geo" so existing renderers work without changes.
+        try {
+          const values = Array.isArray(schema?.values) ? schema.values : null;
+          if (values && !extractParamItems(values, "Geo")?.length) {
+            const terrainItems = extractParamItems(values, "terrain");
+            if (Array.isArray(terrainItems) && terrainItems.length) {
+              const terrainTree = values.find((v) => String(v?.ParamName || "") === "terrain")?.InnerTree;
+              if (terrainTree) {
+                values.push({ ParamName: "Geo", InnerTree: terrainTree });
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        if (schema && Array.isArray(schema?.values) && schema.values.length > 0) {
+          try {
+            window.dispatchEvent(new CustomEvent("grasshopper:result", { detail: { schema } }));
+          } catch {
+            // ignore
+          }
+        }
+
+        if (!res.ok) {
+          console.warn("[Analyze] BRUH compute failed", { status: res.status, text: text?.slice?.(0, 200) });
+        }
+      } catch (e) {
+        const name = String(e?.name || "");
+        if (name === "AbortError") return;
+        console.warn("[Analyze] BRUH compute error", e);
+      }
+    };
+
     let geojsonUrl = "";
     try {
       setModelStatus("Analyze: uploading GeoJSON...");
@@ -2838,6 +2938,8 @@ function RhinoViewer() {
         const warnSuffix = hasFloatingMeshWarning ? " (warn: floating Mesh)" : "";
         setModelStatus(`Analyze: done${extra}${warnSuffix}`);
       }
+
+      // Note: Analyze should only solve unnamedC.gh. Do not trigger BRUH.ghx (Gismo) as a follow-up.
 
       try {
         window.dispatchEvent(

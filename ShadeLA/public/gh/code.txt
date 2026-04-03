@@ -1,0 +1,389 @@
+Compute/Frontend building pipeline (OSM -> heights -> render)
+
+1) What data we use
+
+We render buildings from OpenStreetMap (OSM) building footprints.
+A building is usually a closed polygon in OSM with tags like:
+- building=yes | building=apartments | building=house ...
+Heights can be stored as:
+- height (meters)
+- building:levels (floors)
+- min_height (meters)
+- building:min_level
+If none are present we use a default.
+
+2) Get buildings for a bounding box
+
+Option A: OSM “map” endpoint (simple)
+
+GET https://api.openstreetmap.org/api/0.6/map?bbox=west,south,east,north
+
+Pros:
+- No query language
+Cons:
+- Strict rate limits
+- Returns all objects in bbox (can be heavy)
+
+Option B (recommended for apps): Overpass API query
+
+Example Overpass QL to fetch building polygons in bbox:
+
+[out:json][timeout:25];
+(
+  way["building"](south,west,north,east);
+  relation["building"](south,west,north,east);
+);
+out body;
+>;
+out skel qt;
+
+3) Convert OSM elements -> GeoJSON polygons
+
+Overpass returns nodes/ways/relations. You must assemble ways into coordinate rings.
+Recommended: use an existing converter.
+
+Example using osmtogeojson (Node/browser):
+
+// npm i osmtogeojson
+import osmtogeojson from "osmtogeojson";
+
+async function fetchBuildingsGeoJSON({ west, south, east, north }) {
+  const query = `
+[out:json][timeout:25];
+(
+  way["building"](${south},${west},${north},${east});
+  relation["building"](${south},${west},${north},${east});
+);
+out body;
+>;
+out skel qt;`;
+
+  const res = await fetch("https://overpass-api.de/api/interpreter", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+    body: new URLSearchParams({ data: query }),
+  });
+
+  if (!res.ok) throw new Error(`Overpass failed: ${res.status}`);
+  const osmJson = await res.json();
+
+  const gj = osmtogeojson(osmJson);
+
+  // Keep only polygons/multipolygons
+  const features = (gj.features || []).filter((f) => {
+    const t = String(f?.geometry?.type || "");
+    return t === "Polygon" || t === "MultiPolygon";
+  });
+
+  return { type: "FeatureCollection", features };
+}
+
+4) Choose height for each building
+
+We support these common rules:
+- If OSM tag height exists => use it (meters)
+- Else if building:levels exists => height = levels * floorHeight
+- Else fallback to defaultHeight
+
+Parsing helpers:
+
+function parseNumber(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+
+  // height tag might be like "12", "12.5", "12 m"
+  const m = s.match(/-?\d+(?:\.\d+)?/);
+  if (!m) return null;
+
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildingHeightMeters(tags, opts = {}) {
+  const floorHeight = Number.isFinite(opts.floorHeight) ? opts.floorHeight : 3.0;
+  const defaultHeight = Number.isFinite(opts.defaultHeight) ? opts.defaultHeight : 10.0;
+
+  const h = parseNumber(tags?.height);
+  if (h != null) return Math.max(0, h);
+
+  const levels = parseNumber(tags?.["building:levels"]);
+  if (levels != null) return Math.max(0, levels * floorHeight);
+
+  return defaultHeight;
+}
+
+Optional: base/min height:
+- min_height => extrude from that base
+
+function buildingMinHeightMeters(tags) {
+  const mh = parseNumber(tags?.min_height);
+  return mh != null ? Math.max(0, mh) : 0;
+}
+
+5) Project lon/lat -> local meters (so geometry is not tiny)
+
+Three.js works in arbitrary units; for city scale we usually use meters.
+One common approach:
+- Pick an origin (center of bbox)
+- Convert degrees to meters using an equirectangular approximation
+
+function lonLatToMeters(lon, lat, originLon, originLat) {
+  const metersPerDegLat = 111320;
+  const metersPerDegLon = 111320 * Math.cos((originLat * Math.PI) / 180);
+
+  const x = (lon - originLon) * metersPerDegLon;
+  const y = (lat - originLat) * metersPerDegLat;
+  return { x, y };
+}
+
+6) Build geometry in Three.js (extrude footprint)
+
+Given a GeoJSON Polygon feature, we:
+- take the outer ring coordinates
+- create a THREE.Shape
+- extrude it by height
+
+import * as THREE from "three";
+
+function polygonOuterRing(feature) {
+  const geom = feature?.geometry;
+  if (!geom) return null;
+  if (geom.type === "Polygon") return geom.coordinates?.[0] || null;
+  // MultiPolygon: use the first polygon outer ring for simplicity
+  if (geom.type === "MultiPolygon") return geom.coordinates?.[0]?.[0] || null;
+  return null;
+}
+
+function buildBuildingMesh(feature, originLon, originLat, opts = {}) {
+  const ring = polygonOuterRing(feature);
+  if (!Array.isArray(ring) || ring.length < 4) return null;
+
+  const tags = feature?.properties || {};
+  const h = buildingHeightMeters(tags, opts);
+  const base = buildingMinHeightMeters(tags);
+
+  const shape = new THREE.Shape();
+
+  for (let i = 0; i < ring.length; i++) {
+    const [lon, lat] = ring[i];
+    const p = lonLatToMeters(lon, lat, originLon, originLat);
+
+    if (i === 0) shape.moveTo(p.x, p.y);
+    else shape.lineTo(p.x, p.y);
+  }
+
+  const geom = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.01, h),
+    bevelEnabled: false,
+    curveSegments: 1,
+    steps: 1,
+  });
+
+  // Put Z up: extrude goes along +Z by default, which is fine.
+  // If you want buildings to start at base height, move geometry:
+  geom.translate(0, 0, base);
+
+  geom.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xb0b0b0,
+    roughness: 0.9,
+    metalness: 0.0,
+  });
+
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.userData = { osm: tags, height: h, base };
+  return mesh;
+}
+
+7) Render
+
+You then add meshes to your Three.js scene:
+
+async function addBuildingsToScene(scene, bbox) {
+  const originLon = (bbox.west + bbox.east) / 2;
+  const originLat = (bbox.south + bbox.north) / 2;
+
+  const gj = await fetchBuildingsGeoJSON(bbox);
+
+  const group = new THREE.Group();
+  group.name = "buildings";
+
+  for (const f of gj.features) {
+    const m = buildBuildingMesh(f, originLon, originLat, { floorHeight: 3.2, defaultHeight: 12 });
+    if (m) group.add(m);
+  }
+
+  scene.add(group);
+  return group;
+}
+
+8) How this relates to Grasshopper/Rhino.Compute
+
+Your current app can send GeoJSON into Grasshopper via `/compute/grasshopper`.
+If the GH definition expects a single string input (URL or inline GeoJSON), the payload is:
+
+{
+  "pointer": "http://localhost:5173/gh/unnamedC.gh?__cb=...",
+  "values": [
+    {
+      "ParamName": "RH_IN:OSM_GEOJSON",
+      "InnerTree": {
+        "{ 0; }": [
+          { "type": "System.String", "data": "{...geojson...}" }
+        ]
+      }
+    }
+  ]
+}
+
+Grasshopper then:
+- parses GeoJSON
+- creates curves (footprints)
+- extrudes to solids/meshes based on height tags
+- outputs meshes (e.g. ParamName: Geo / RH_OUT)
+
+9) Practical notes
+
+- Overpass has rate limits; cache results per bbox.
+- Height tag units are usually meters, but sometimes includes 'm'.
+- For large bboxes you may need to simplify footprints.
+- Always pick a stable origin to avoid floating point issues.
+
+---
+End of document.
+
+
+CODE ONLY
+
+import osmtogeojson from "osmtogeojson";
+import * as THREE from "three";
+
+export function parseNumber(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const m = s.match(/-?\d+(?:\.\d+)?/);
+  if (!m) return null;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function buildingHeightMeters(tags, opts = {}) {
+  const floorHeight = Number.isFinite(opts.floorHeight) ? opts.floorHeight : 3.0;
+  const defaultHeight = Number.isFinite(opts.defaultHeight) ? opts.defaultHeight : 10.0;
+
+  const h = parseNumber(tags?.height);
+  if (h != null) return Math.max(0, h);
+
+  const levels = parseNumber(tags?.["building:levels"]);
+  if (levels != null) return Math.max(0, levels * floorHeight);
+
+  return defaultHeight;
+}
+
+export function buildingMinHeightMeters(tags) {
+  const mh = parseNumber(tags?.min_height);
+  return mh != null ? Math.max(0, mh) : 0;
+}
+
+export async function fetchBuildingsGeoJSON({ west, south, east, north }) {
+  const query = `
+[out:json][timeout:25];
+(
+  way["building"](${south},${west},${north},${east});
+  relation["building"](${south},${west},${north},${east});
+);
+out body;
+>;
+out skel qt;`;
+
+  const res = await fetch("https://overpass-api.de/api/interpreter", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+    body: new URLSearchParams({ data: query }),
+  });
+
+  if (!res.ok) throw new Error(`Overpass failed: ${res.status}`);
+  const osmJson = await res.json();
+  const gj = osmtogeojson(osmJson);
+
+  const features = (gj.features || []).filter((f) => {
+    const t = String(f?.geometry?.type || "");
+    return t === "Polygon" || t === "MultiPolygon";
+  });
+
+  return { type: "FeatureCollection", features };
+}
+
+export function lonLatToMeters(lon, lat, originLon, originLat) {
+  const metersPerDegLat = 111320;
+  const metersPerDegLon = 111320 * Math.cos((originLat * Math.PI) / 180);
+  const x = (lon - originLon) * metersPerDegLon;
+  const y = (lat - originLat) * metersPerDegLat;
+  return { x, y };
+}
+
+export function polygonOuterRing(feature) {
+  const geom = feature?.geometry;
+  if (!geom) return null;
+  if (geom.type === "Polygon") return geom.coordinates?.[0] || null;
+  if (geom.type === "MultiPolygon") return geom.coordinates?.[0]?.[0] || null;
+  return null;
+}
+
+export function buildBuildingMesh(feature, originLon, originLat, opts = {}) {
+  const ring = polygonOuterRing(feature);
+  if (!Array.isArray(ring) || ring.length < 4) return null;
+
+  const tags = feature?.properties || {};
+  const h = buildingHeightMeters(tags, opts);
+  const base = buildingMinHeightMeters(tags);
+
+  const shape = new THREE.Shape();
+  for (let i = 0; i < ring.length; i++) {
+    const [lon, lat] = ring[i];
+    const p = lonLatToMeters(lon, lat, originLon, originLat);
+    if (i === 0) shape.moveTo(p.x, p.y);
+    else shape.lineTo(p.x, p.y);
+  }
+
+  const geom = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.01, h),
+    bevelEnabled: false,
+    curveSegments: 1,
+    steps: 1,
+  });
+
+  geom.translate(0, 0, base);
+  geom.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xb0b0b0,
+    roughness: 0.9,
+    metalness: 0.0,
+  });
+
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.userData = { osm: tags, height: h, base };
+  return mesh;
+}
+
+export async function addBuildingsToScene(scene, bbox, opts = {}) {
+  const originLon = (bbox.west + bbox.east) / 2;
+  const originLat = (bbox.south + bbox.north) / 2;
+
+  const gj = await fetchBuildingsGeoJSON(bbox);
+
+  const group = new THREE.Group();
+  group.name = "buildings";
+
+  for (const f of gj.features) {
+    const m = buildBuildingMesh(f, originLon, originLat, opts);
+    if (m) group.add(m);
+  }
+
+  scene.add(group);
+  return group;
+}
