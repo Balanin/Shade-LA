@@ -51,6 +51,9 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const cameraRef = useRef(null);
   const rendererRef = useRef(null);
   const controlsRef = useRef(null);
+  const ambientLightRef = useRef(null);
+  const sunLightRef = useRef(null);
+  const sunTargetRef = useRef(null);
 
   const terrainStateRef = useRef(null);
   const geoRefRef = useRef(null);
@@ -76,6 +79,19 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const currentLineRef = useRef(null);
   const previewLineRef = useRef(null);
   const raycasterRef = useRef(new THREE.Raycaster());
+
+  const [shadowOverlayEnabled, setShadowOverlayEnabled] = useState(false);
+  const [sunUiDate, setSunUiDate] = useState(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  });
+  const [sunUiMinutes, setSunUiMinutes] = useState(() => {
+    const now = new Date();
+    return now.getHours() * 60 + now.getMinutes();
+  });
 
   const clampAngleDegrees = (value) => {
     const n = Number(value);
@@ -123,6 +139,144 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const altitudeDeg = (altitude * 180) / Math.PI;
     const azimuthFromNorth = ((azimuth * 180) / Math.PI + 180) % 360;
     return { altitudeDeg, azimuthDeg: azimuthFromNorth };
+  };
+
+  const parseIsoDate = (value) => {
+    if (!value || typeof value !== "string") return null;
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (![year, month, day].every((n) => Number.isFinite(n))) return null;
+    if (month < 1 || month > 12) return null;
+    if (day < 1 || day > 31) return null;
+    return { year, month, day };
+  };
+
+  const computeSunDirectionForUi = () => {
+    const b = boundsRef.current;
+    if (!b) return null;
+    const latitude = (b.minLat + b.maxLat) / 2;
+    const longitude = (b.minLon + b.maxLon) / 2;
+
+    const parsed = parseIsoDate(sunUiDate);
+    if (!parsed) return null;
+
+    const minutes = clampNumber(sunUiMinutes, 0, 1439);
+    const hour = Math.floor(minutes / 60);
+    const minute = minutes % 60;
+    const momentUtc = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day, hour, minute, 0));
+
+    const { altitudeDeg, azimuthDeg } = manualSolarPosition(latitude, longitude, momentUtc);
+    if (!Number.isFinite(altitudeDeg) || !Number.isFinite(azimuthDeg) || altitudeDeg <= 0) {
+      return {
+        direction: new THREE.Vector3(0, 1, 0),
+        momentUtc,
+        aboveHorizon: false,
+        altitudeDeg: Number.isFinite(altitudeDeg) ? altitudeDeg : -90,
+      };
+    }
+
+    const altitudeRad = (altitudeDeg * Math.PI) / 180;
+    const azimuthRad = (azimuthDeg * Math.PI) / 180;
+    const horizontal = Math.cos(altitudeRad);
+    const direction = new THREE.Vector3(
+      Math.sin(azimuthRad) * horizontal,
+      Math.sin(altitudeRad),
+      -Math.cos(azimuthRad) * horizontal
+    ).normalize();
+
+    return { direction, momentUtc, aboveHorizon: true, altitudeDeg };
+  };
+
+  const getSceneBoundsForShadows = () => {
+    const terrain = terrainStateRef.current?.mesh;
+    if (!terrain) return null;
+
+    const box = new THREE.Box3().setFromObject(terrain);
+    if (buildingGroupRef.current) {
+      box.union(new THREE.Box3().setFromObject(buildingGroupRef.current));
+    }
+    return box;
+  };
+
+  const configureShadowCamera = (light, box) => {
+    if (!light?.shadow?.camera || !box) return;
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+
+    const radius = Math.max(size.x, size.z, 1) * 0.65;
+    const cam = light.shadow.camera;
+    cam.left = -radius;
+    cam.right = radius;
+    cam.top = radius;
+    cam.bottom = -radius;
+    cam.near = 0.1;
+    cam.far = Math.max(2000, size.y * 6 + radius * 3);
+    cam.updateProjectionMatrix();
+
+    light.shadow.bias = -0.00015;
+    light.shadow.normalBias = 0.02;
+  };
+
+  const updateSunAndShadows = () => {
+    const scene = sceneRef.current;
+    const light = sunLightRef.current;
+    const target = sunTargetRef.current;
+    const renderer = rendererRef.current;
+    const ambient = ambientLightRef.current;
+    if (!scene || !light || !target || !renderer) return;
+
+    if (!shadowOverlayEnabled) {
+      renderer.shadowMap.enabled = false;
+      light.castShadow = false;
+
+      if (ambient) {
+        ambient.intensity = 1.05;
+      }
+      light.intensity = 2.0;
+      return;
+    }
+
+    const sun = computeSunDirectionForUi();
+    const aboveHorizon = !!sun?.aboveHorizon;
+    const altitudeDeg = Number(sun?.altitudeDeg);
+    const clampedAlt = Number.isFinite(altitudeDeg) ? clampNumber(altitudeDeg, -15, 15) : -15;
+    const dayFactor = aboveHorizon ? clampNumber(clampedAlt / 10, 0, 1) : 0;
+
+    // Lighting levels: keep a small ambient at night; ramp up smoothly after sunrise.
+    if (ambient) {
+      ambient.intensity = 1.05 * (0.12 + 0.88 * dayFactor);
+    }
+    light.intensity = 2.0 * (0.05 + 0.95 * dayFactor);
+
+    const shadowsActive = aboveHorizon;
+    renderer.shadowMap.enabled = shadowsActive;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    light.castShadow = shadowsActive;
+
+    const box = getSceneBoundsForShadows();
+    if (!box) return;
+
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+
+    const dir = sun?.direction ?? new THREE.Vector3(0, 1, 0);
+    const distance = Math.max(size.x, size.z, 1) * 1.8 + Math.max(size.y, 1) * 2.0;
+
+    target.position.copy(center);
+    light.position.copy(center).addScaledVector(dir, distance);
+
+    if (shadowsActive) {
+      light.shadow.mapSize.set(2048, 2048);
+      configureShadowCamera(light, box);
+    }
   };
 
   const generateSunDirections = ({ latitude, longitude, analysisPeriod, timestepMinutes, northDegrees }) => {
@@ -267,7 +421,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       showBuildings: !!localOptions?.showBuildings,
       defaultFloorHeight: clampNumber(localOptions?.defaultFloorHeight ?? 3.2, 1, 10),
       defaultBuildingHeight: clampNumber(localOptions?.defaultBuildingHeight ?? 12, 1, 200),
-      opacity: clampNumber(localOptions?.buildingOpacity ?? 0.65, 0, 1),
+      opacity: clampNumber(localOptions?.buildingOpacity ?? 1, 0, 1),
       exaggeration: clampNumber(localOptions?.exaggeration ?? 1, 0, 20),
     }),
     [localOptions]
@@ -585,6 +739,11 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     };
   }, []);
 
+  useEffect(() => {
+    updateSunAndShadows();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shadowOverlayEnabled, sunUiDate, sunUiMinutes]);
+
   function resizeRenderer() {
     const mount = mountRef.current;
     const renderer = rendererRef.current;
@@ -860,6 +1019,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
 
       applyVerticalExaggeration(terrainState, displayOptions.exaggeration);
       terrainState.mesh.visible = !!displayOptions.showTerrain;
+      terrainState.mesh.receiveShadow = true;
+      terrainState.mesh.castShadow = false;
 
       scene.add(terrainState.mesh);
       frameScene();
@@ -870,6 +1031,12 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
         buildingFeaturesRef.current = buildingFeatures;
         const bGroup = createBuildingGroup(buildingFeatures, parsed, geoReference, buildingOptions);
         buildingGroupRef.current = bGroup;
+        bGroup.traverse((obj) => {
+          if (obj?.isMesh) {
+            obj.castShadow = true;
+            obj.receiveShadow = true;
+          }
+        });
         scene.add(bGroup);
 
         reportStatus("Fetching OSM roads...");
@@ -884,6 +1051,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       } else {
         reportStatus("Terrain ready");
       }
+
+      updateSunAndShadows();
     } catch (e) {
       reportStatus(`Error: ${String(e?.message || e)}`);
     }
@@ -999,15 +1168,28 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     }
     controls.target.set(0, 10, 0);
 
-    scene.add(new THREE.AmbientLight("#ffffff", 1.05));
+    const ambientLight = new THREE.AmbientLight("#ffffff", 1.05);
+    scene.add(ambientLight);
     const directionalLight = new THREE.DirectionalLight("#fff6db", 2.0);
     directionalLight.position.set(80, 120, 60);
+    directionalLight.castShadow = false;
+    directionalLight.shadow.camera = new THREE.OrthographicCamera(-200, 200, 200, -200, 0.1, 5000);
+    directionalLight.shadow.mapSize.set(2048, 2048);
+    directionalLight.shadow.bias = -0.00015;
+    directionalLight.shadow.normalBias = 0.02;
+    const lightTarget = new THREE.Object3D();
+    lightTarget.position.set(0, 0, 0);
+    scene.add(lightTarget);
+    directionalLight.target = lightTarget;
     scene.add(directionalLight);
 
     sceneRef.current = scene;
     cameraRef.current = camera;
     rendererRef.current = renderer;
     controlsRef.current = controls;
+    ambientLightRef.current = ambientLight;
+    sunLightRef.current = directionalLight;
+    sunTargetRef.current = lightTarget;
 
     const drawGroup = new THREE.Group();
     drawGroup.name = "drawings";
@@ -1037,6 +1219,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     }
 
     resizeRenderer();
+
+    updateSunAndShadows();
 
     return () => {
       window.removeEventListener("resize", onResize);
@@ -1230,6 +1414,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     if (drawGroupRef.current) {
       drawGroupRef.current.scale.y = displayOptions.exaggeration;
     }
+
+    updateSunAndShadows();
   }, [displayOptions, buildingOptions, roadOptions]);
 
   // listen for Analyze events and auto-generate terrain+OSM
@@ -1282,6 +1468,76 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
           alignItems: "center",
         }}
       >
+        <button
+          type="button"
+          onClick={() => setShadowOverlayEnabled((v) => !v)}
+          style={{
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.15)",
+            background: shadowOverlayEnabled ? "rgba(250,204,21,0.88)" : "rgba(17,24,39,0.8)",
+            color: shadowOverlayEnabled ? "#0b1220" : "#e5e7eb",
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {shadowOverlayEnabled ? "Shadows: ON" : "Shadows: OFF"}
+        </button>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 12,
+            whiteSpace: "nowrap",
+            opacity: shadowOverlayEnabled ? 1 : 0.45,
+          }}
+        >
+          date
+          <input
+            type="date"
+            value={sunUiDate}
+            onChange={(e) => setSunUiDate(e.target.value)}
+            disabled={!shadowOverlayEnabled}
+            style={{
+              padding: "5px 8px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "rgba(0,0,0,0.22)",
+              color: "#e5e7eb",
+              outline: "none",
+            }}
+          />
+        </label>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 12,
+            whiteSpace: "nowrap",
+            opacity: shadowOverlayEnabled ? 1 : 0.45,
+          }}
+        >
+          time
+          <input
+            type="range"
+            min={0}
+            max={1439}
+            step={1}
+            value={sunUiMinutes}
+            onChange={(e) => setSunUiMinutes(Number(e.target.value))}
+            disabled={!shadowOverlayEnabled}
+            style={{ width: 160 }}
+          />
+          <span style={{ fontVariantNumeric: "tabular-nums", opacity: 0.9 }}>
+            {String(Math.floor(clampNumber(sunUiMinutes, 0, 1439) / 60)).padStart(2, "0")}:
+            {String(Math.floor(clampNumber(sunUiMinutes, 0, 1439) % 60)).padStart(2, "0")}
+          </span>
+        </label>
+
         <button
           type="button"
           onClick={() => {
