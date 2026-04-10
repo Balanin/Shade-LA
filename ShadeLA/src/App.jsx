@@ -4,7 +4,7 @@ import PowerBIReport from "./components/PowerBIReport";
 import GrasshopperPanel from "./components/GrasshopperPanel";
 import TerrainOsmPanel from "./components/TerrainOsmPanel";
 import TerrainOsmViewer from "./components/TerrainOsmViewer";
-import CanopyTreesSection from "./components/CanopyTreesSection";
+import Solutions from "./components/Solutions";
 import ResourcesSections from "./components/ResourcesSections";
 
 function App() {
@@ -30,7 +30,7 @@ function App() {
       { href: "#overview", label: "Overview" },
       { href: "#analytics", label: "PowerBI" },
       { href: "#workspace", label: "Map + Unreal" },
-      { href: "#canopy-trees", label: "Canopy / Trees" },
+      { href: "#solutions", label: "Shade Solutions" },
       { href: "#resources", label: "Resources" },
     ],
     []
@@ -240,8 +240,8 @@ function App() {
             </section>
           </div>
         </section>
-
-        <CanopyTreesSection />
+        <section className="panel"><Solutions /> </section>
+       
         <ResourcesSections />
       </main>
     </div>

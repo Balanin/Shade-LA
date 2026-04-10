@@ -1,0 +1,86 @@
+[
+  {
+    "id": "01",
+    "name": "Parametric Tree",
+    "shadeCategory": "Fixed / Sculptural",
+    "primaryMaterial": "Concrete / Fiber",
+    "techIntegration": "None",
+    "idealPlacement": {
+      "title": "Wide Civic Plazas",
+      "description": "High-traffic open areas requiring durable, large-scale coverage."
+    },
+    "photo": "images/parametric_tree.jpg"
+  },
+  {
+    "id": "02",
+    "name": "Geometric Parasol",
+    "shadeCategory": "Modular",
+    "primaryMaterial": "Steel / Polymer",
+    "techIntegration": "Drainage / Planters",
+    "idealPlacement": {
+      "title": "Urban Commercial Sidewalks",
+      "description": "Busy retail corridors where floor space is limited but greenery is needed."
+    },
+    "photo": "images/geometric_parasol.jpg"
+  },
+  {
+    "id": "03",
+    "name": "Minimalist Petal",
+    "shadeCategory": "Textile",
+    "primaryMaterial": "Technical Fabric",
+    "techIntegration": "None",
+    "idealPlacement": {
+      "title": "Corporate or Academic Courtyards",
+      "description": "Semi-private outdoor spaces for quiet gathering or study."
+    },
+    "photo": "images/minimalist_petal.jpg"
+  },
+  {
+    "id": "04",
+    "name": "Chromatic Lounger",
+    "shadeCategory": "Artistic",
+    "primaryMaterial": "Glass / Acrylic",
+    "techIntegration": "Light Refraction",
+    "idealPlacement": {
+      "title": "Creative District Pocket Parks",
+      "description": "Small-scale urban infill focused on artistic expression and rest."
+    },
+    "photo": "images/chromatic_lounger.jpg"
+  },
+  {
+    "id": "05",
+    "name": "Biophilic Lily Pad",
+    "shadeCategory": "Organic",
+    "primaryMaterial": "Metal / Vegetation",
+    "techIntegration": "Living Shade",
+    "idealPlacement": {
+      "title": "Eco-Friendly Residential Zones",
+      "description": "Community-focused areas prioritizing natural cooling and biodiversity."
+    },
+    "photo": "images/biophilic_lily_pad.jpg"
+  },
+  {
+    "id": "06",
+    "name": "Smart Pod",
+    "shadeCategory": "Functional",
+    "primaryMaterial": "Composite",
+    "techIntegration": "Solar / Digital",
+    "idealPlacement": {
+      "title": "Transit Hubs & Tech Parks",
+      "description": "High-connectivity areas where commuters or workers need power and data."
+    },
+    "photo": "images/smart_pod.jpg"
+  },
+  {
+    "id": "07",
+    "name": "Sail Lookout",
+    "shadeCategory": "Nautical",
+    "primaryMaterial": "Wood / Fabric",
+    "techIntegration": "Angle Adjustment",
+    "idealPlacement": {
+      "title": "Coastal Promenades",
+      "description": "Beach-adjacent recreation areas subject to high winds and salt air."
+    },
+    "photo": "images/sail_lookout.jpg"
+  }
+]
