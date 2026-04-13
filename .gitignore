@@ -26,6 +26,9 @@
 **/bin/
 **/obj/
 
+# Repo-specific
+/Api/
+
 # Temporary
 **/*.tmp
 **/*.swp

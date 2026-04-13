@@ -15,8 +15,12 @@ import {
 } from "../terrain-osm/terrain.js";
 import { createBuildingGroup, disposeBuildingGroup, fetchBuildingsGeoJson, updateBuildingDisplay } from "../terrain-osm/buildings.js";
 import { createRoadGroup, disposeRoadGroup, fetchRoadGeoJson, updateRoadDisplay } from "../terrain-osm/roads.js";
-import { createSunHoursOverlay, disposeSunHoursOverlay, updateSunHoursOverlay } from "../terrain-osm/analysis-visualize.js";
-import { runDirectSunHoursAnalysis } from "../terrain-osm/analysis-api.js";
+import {
+  createSunHoursOverlay,
+  disposeSunHoursOverlay,
+  updateSunHoursOverlay,
+} from "../terrain-osm/analysis-visualize.js";
+import { runDirectSunHoursAnalysis, runMeshFromPolylines } from "../terrain-osm/analysis-api.js";
 
 function clampNumber(v, min, max) {
   const n = Number(v);
@@ -61,6 +65,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const buildingGroupRef = useRef(null);
   const roadGroupRef = useRef(null);
   const analysisOverlayRef = useRef(null);
+  const meshOverlayRef = useRef(null);
   const sunPathGroupRef = useRef(null);
 
   const selectedBuildingRef = useRef(null);
@@ -78,6 +83,101 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const drawStateRef = useRef({ polylines: [], current: [] });
   const currentLineRef = useRef(null);
   const previewLineRef = useRef(null);
+
+  const clearMeshOverlay = () => {
+    const scene = sceneRef.current;
+    const overlay = meshOverlayRef.current;
+    if (!scene || !overlay) return;
+    scene.remove(overlay);
+    clearGroup(overlay);
+    overlay.clear();
+    meshOverlayRef.current = null;
+  };
+
+  const applyMeshOverlay = (mesh) => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    const vertices = mesh?.vertices;
+    const faces = mesh?.faces;
+    if (!Array.isArray(vertices) || !Array.isArray(faces) || vertices.length < 3 || faces.length < 1) {
+      throw new Error("Mesh payload is empty");
+    }
+
+    clearMeshOverlay();
+
+    const overlayGroup = new THREE.Group();
+    overlayGroup.name = "polyline-mesh-overlay";
+    overlayGroup.renderOrder = 35;
+
+    const pos = new Float32Array(vertices.length * 3);
+    for (let i = 0; i < vertices.length; i += 1) {
+      const v = vertices[i];
+      pos[i * 3 + 0] = Number(v?.[0] ?? 0);
+      pos[i * 3 + 1] = Number(v?.[1] ?? 0) + 0.06;
+      pos[i * 3 + 2] = Number(v?.[2] ?? 0);
+    }
+
+    const vCount = vertices.length;
+    const out = [];
+    const pushTri = (aRaw, bRaw, cRaw) => {
+      const a = Number(aRaw);
+      const b = Number(bRaw);
+      const c = Number(cRaw);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) return;
+      const ai = Math.trunc(a);
+      const bi = Math.trunc(b);
+      const ci = Math.trunc(c);
+      if (ai < 0 || bi < 0 || ci < 0) return;
+      if (ai >= vCount || bi >= vCount || ci >= vCount) return;
+      if (ai === bi || bi === ci || ci === ai) return;
+      out.push(ai, bi, ci);
+    };
+
+    if (faces.length >= 3 && typeof faces[0] === "number") {
+      for (let i = 0; i + 2 < faces.length; i += 3) {
+        pushTri(faces[i], faces[i + 1], faces[i + 2]);
+      }
+    } else {
+      for (let i = 0; i < faces.length; i += 1) {
+        const f = faces[i];
+        pushTri(f?.[0], f?.[1], f?.[2]);
+      }
+    }
+
+    if (out.length < 3) {
+      throw new Error("Mesh faces are invalid");
+    }
+
+    const index = new Uint32Array(out);
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(new THREE.BufferAttribute(index, 1));
+    geo.computeVertexNormals();
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x60a5fa,
+      transparent: true,
+      opacity: 0.35,
+      roughness: 0.95,
+      metalness: 0.0,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+
+    const m = new THREE.Mesh(geo, mat);
+    m.castShadow = false;
+    m.receiveShadow = true;
+    m.renderOrder = 35;
+    overlayGroup.add(m);
+
+    overlayGroup.scale.y = displayOptions.exaggeration;
+    meshOverlayRef.current = overlayGroup;
+    scene.add(overlayGroup);
+  };
   const raycasterRef = useRef(new THREE.Raycaster());
 
   const [shadowOverlayEnabled, setShadowOverlayEnabled] = useState(false);
@@ -479,6 +579,27 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   };
 
   const getBuildingLabel = (meta) => {
+    const props = meta?.feature?.properties;
+    const street = props?.["addr:street"] ?? props?.street;
+    const house = props?.["addr:housenumber"] ?? props?.housenumber;
+    const city = props?.["addr:city"] ?? props?.city;
+    const postcode = props?.["addr:postcode"] ?? props?.postcode;
+
+    const streetStr = street !== null && street !== undefined ? String(street).trim() : "";
+    const houseStr = house !== null && house !== undefined ? String(house).trim() : "";
+    if (streetStr || houseStr) {
+      const base = `${streetStr}${streetStr && houseStr ? " " : ""}${houseStr}`.trim();
+      const suffix = [
+        city !== null && city !== undefined ? String(city).trim() : "",
+        postcode !== null && postcode !== undefined ? String(postcode).trim() : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+
+      return suffix ? `${base}, ${suffix}` : base;
+    }
+
     const key = getBuildingKey(meta);
     if (!key) return "Building";
     const parts = String(key).split(/[/:]/g).filter(Boolean);
@@ -758,6 +879,19 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     renderer.setSize(w, h, true);
   }
 
+  const ensureDrawGroup = () => {
+    const scene = sceneRef.current;
+    if (!scene) return null;
+    if (drawGroupRef.current) return drawGroupRef.current;
+
+    const drawGroup = new THREE.Group();
+    drawGroup.name = "drawings";
+    drawGroup.renderOrder = 20;
+    drawGroupRef.current = drawGroup;
+    scene.add(drawGroup);
+    return drawGroup;
+  };
+
   const clearGroup = (group) => {
     if (!group) return;
     group.traverse((obj) => {
@@ -794,10 +928,11 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
 
   const updateCurrentLine = () => {
     const current = drawStateRef.current.current;
-    if (!drawGroupRef.current) return;
+    const drawGroup = ensureDrawGroup();
+    if (!drawGroup) return;
 
     if (currentLineRef.current) {
-      drawGroupRef.current.remove(currentLineRef.current);
+      drawGroup.remove(currentLineRef.current);
       currentLineRef.current.geometry?.dispose?.();
       currentLineRef.current.material?.dispose?.();
       currentLineRef.current = null;
@@ -817,15 +952,16 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     line.renderOrder = 60;
     line.frustumCulled = false;
     currentLineRef.current = line;
-    drawGroupRef.current.add(line);
+    drawGroup.add(line);
   };
 
   const updatePreviewLine = (mousePt) => {
     const current = drawStateRef.current.current;
-    if (!drawGroupRef.current) return;
+    const drawGroup = ensureDrawGroup();
+    if (!drawGroup) return;
 
     if (previewLineRef.current) {
-      drawGroupRef.current.remove(previewLineRef.current);
+      drawGroup.remove(previewLineRef.current);
       previewLineRef.current.geometry?.dispose?.();
       previewLineRef.current.material?.dispose?.();
       previewLineRef.current = null;
@@ -851,7 +987,26 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     line.computeLineDistances();
     line.frustumCulled = false;
     previewLineRef.current = line;
-    drawGroupRef.current.add(line);
+    drawGroup.add(line);
+  };
+
+  const createFinalLineFromPoints = (pts) => {
+    if (!pts || pts.length < 2) return null;
+    const geo = buildLineGeometry(pts);
+    const mat = new LineMaterial({
+      color: 0x60a5fa,
+      linewidth: 3.5,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.95,
+    });
+    syncLineMaterialResolution(mat);
+    const line = new Line2(geo, mat);
+    line.renderOrder = 60;
+    line.frustumCulled = false;
+    line.userData = { ...(line.userData || {}), isUserDrawn: true, isFinal: true };
+    return line;
   };
 
   const screenToPointOnTerrain = (ev) => {
@@ -904,6 +1059,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     if (!scene) return;
 
     clearAnalysis();
+    clearMeshOverlay();
 
     if (roadGroupRef.current) {
       scene.remove(roadGroupRef.current);
@@ -927,9 +1083,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     }
 
     if (drawGroupRef.current) {
-      scene.remove(drawGroupRef.current);
       clearGroup(drawGroupRef.current);
-      drawGroupRef.current = null;
+      drawGroupRef.current.clear();
     }
 
     drawStateRef.current = { polylines: [], current: [] };
@@ -1325,14 +1480,19 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     drawStateRef.current.polylines.push(current.map((p) => p.clone()));
     drawStateRef.current.current = [];
 
-    if (currentLineRef.current && drawGroupRef.current) {
-      const finalLine = currentLineRef.current;
-      currentLineRef.current = null;
-      try {
-        finalLine.material?.dispose?.();
-        finalLine.material = new THREE.LineBasicMaterial({ color: 0x60a5fa });
-      } catch {
-        // ignore
+    const drawGroup = ensureDrawGroup();
+    if (drawGroup) {
+      if (currentLineRef.current) {
+        drawGroup.remove(currentLineRef.current);
+        currentLineRef.current.geometry?.dispose?.();
+        currentLineRef.current.material?.dispose?.();
+        currentLineRef.current = null;
+      }
+
+      const lastPts = drawStateRef.current.polylines[drawStateRef.current.polylines.length - 1];
+      const finalLine = createFinalLineFromPoints(lastPts);
+      if (finalLine) {
+        drawGroup.add(finalLine);
       }
     }
 
@@ -1362,7 +1522,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const last = drawGroupRef.current.children
       .slice()
       .reverse()
-      .find((c) => c && c.type === "Line");
+      .find((c) => c && (c.isLine2 || c.type === "Line") && c.userData?.isFinal);
     if (last) {
       drawGroupRef.current.remove(last);
       last.geometry?.dispose?.();
@@ -1383,6 +1543,48 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     previewLineRef.current = null;
     setDrawStatus("");
     forceDrawUiUpdate((x) => x + 1);
+  };
+
+  const runDrawnPolylines = async () => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    const polylines = (drawStateRef.current?.polylines || []).map((line) =>
+      (line || []).map((p) => [p.x, p.y, p.z])
+    );
+
+    if (!polylines.length) {
+      setDrawStatus("Run: no finished polylines (click Finish first)");
+      return;
+    }
+
+    setDrawStatus("Run: generating mesh...");
+
+    try {
+      const result = await runMeshFromPolylines({
+        polylines,
+        options: {
+          y: 0,
+          offset: 0,
+          relax_iterations: 0,
+          relax_strength: 0.35,
+          edge_length_factor: 1.0,
+        },
+      });
+
+      const mesh = result?.mesh;
+      const vertices = mesh?.vertices;
+      const faces = mesh?.faces;
+
+      if (!Array.isArray(vertices) || !Array.isArray(faces) || vertices.length < 3 || faces.length < 1) {
+        throw new Error("Mesh backend returned empty mesh");
+      }
+
+      applyMeshOverlay(mesh);
+      setDrawStatus(`Run: mesh ok (V=${vertices.length}, F=${faces.length})`);
+    } catch (e) {
+      setDrawStatus(`Run error: ${String(e?.message || e)}`);
+    }
   };
 
   // apply display options changes
@@ -1411,12 +1613,64 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       updateSunHoursOverlay(analysisOverlayRef.current, displayOptions.exaggeration);
     }
 
+    if (meshOverlayRef.current) {
+      meshOverlayRef.current.scale.y = displayOptions.exaggeration;
+    }
+
     if (drawGroupRef.current) {
       drawGroupRef.current.scale.y = displayOptions.exaggeration;
     }
 
     updateSunAndShadows();
   }, [displayOptions, buildingOptions, roadOptions]);
+
+  // mesh panel integration (replaces Grasshopper)
+  useEffect(() => {
+    const onReq = (ev) => {
+      const detail = ev?.detail || {};
+      const requestId = detail.requestId;
+
+      const polylines = (drawStateRef.current?.polylines || [])
+        .map((line) => (line || []).map((p) => [p.x, p.y, p.z]));
+
+      try {
+        window.dispatchEvent(
+          new CustomEvent("mesh:polylines-response", {
+            detail: { requestId, polylines },
+          })
+        );
+      } catch {
+        // ignore
+      }
+    };
+
+    const onApply = (ev) => {
+      const detail = ev?.detail || {};
+      if (!detail.mesh) return;
+      try {
+        applyMeshOverlay(detail.mesh);
+      } catch {
+        // ignore
+      }
+    };
+
+    const onClear = () => {
+      try {
+        clearMeshOverlay();
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener("mesh:request-polylines", onReq);
+    window.addEventListener("mesh:apply", onApply);
+    window.addEventListener("mesh:clear", onClear);
+    return () => {
+      window.removeEventListener("mesh:request-polylines", onReq);
+      window.removeEventListener("mesh:apply", onApply);
+      window.removeEventListener("mesh:clear", onClear);
+    };
+  }, [displayOptions.exaggeration]);
 
   // listen for Analyze events and auto-generate terrain+OSM
   useEffect(() => {
@@ -1426,6 +1680,9 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       if (data.type !== "cadmapper:analyze") return;
       const next = boundsFromAnalyze(data.bbox);
       if (!next) return;
+      // IMPORTANT: generate() reads boundsRef.current, not React state.
+      // setBounds(next) is async, so without this assignment we can generate the DEFAULT bounds.
+      boundsRef.current = next;
       setBounds(next);
       reportStatus("Analyze received: generating terrain + OSM...");
       // wait a tick so boundsRef updates
@@ -1482,6 +1739,24 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
           }}
         >
           {shadowOverlayEnabled ? "Shadows: ON" : "Shadows: OFF"}
+        </button>
+
+        <button
+          type="button"
+          onClick={runDrawnPolylines}
+          disabled={totalFinal < 1}
+          style={{
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.15)",
+            background: "rgba(168,85,247,0.85)",
+            color: "#e5e7eb",
+            cursor: totalFinal >= 1 ? "pointer" : "not-allowed",
+            opacity: totalFinal >= 1 ? 1 : 0.5,
+            whiteSpace: "nowrap",
+          }}
+        >
+          Run
         </button>
 
         <label
@@ -1544,6 +1819,18 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
             const next = !drawModeRef.current;
             drawModeRef.current = next;
             setDrawMode(next);
+            if (next) {
+              try {
+                clearAllDrawings();
+              } catch {
+                // ignore
+              }
+              try {
+                clearMeshOverlay();
+              } catch {
+                // ignore
+              }
+            }
             setDrawStatus(next ? "Draw: click to add points" : "");
           }}
           style={{

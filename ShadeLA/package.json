@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:ui": "vite",
-    "dev:api": ".\\server\\.venv\\Scripts\\python.exe -m uvicorn server.app:app --host 127.0.0.1 --port 8001",
+    "dev:api": ".\\server\\.venv\\Scripts\\python.exe -m uvicorn server.app:app --host 127.0.0.1 --port 8001 --reload --reload-dir server",
     "dev:ui:solar": "set VITE_ANALYSIS_API_BASE_URL=http://127.0.0.1:8001&& vite",
     "dev:solar": "concurrently -n UI,API -c cyan,green \"npm run dev:ui:solar\" \"npm run dev:api\"",
     "dev:cad": "set COMPUTE_URL=http://localhost:6500&& set COMPUTE_KEY=shadela-local&& set NEXT_PUBLIC_RHINO_COMPUTE_URL=http://localhost:6500&& npm --prefix cad-3d run dev -- -p 3001",

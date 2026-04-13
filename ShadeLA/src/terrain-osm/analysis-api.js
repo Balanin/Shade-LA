@@ -97,3 +97,34 @@ export async function runDirectSunHoursAnalysis({
 
   return response.json();
 }
+
+export async function runMeshFromPolylines({ polylines, options }) {
+  const payload = {
+    polylines: Array.isArray(polylines) ? polylines : [],
+    options: options && typeof options === "object" ? options : {},
+  };
+
+  let response;
+  try {
+    response = await fetch(buildApiUrl("/analysis/mesh/from-polylines"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    throw new Error(
+      `Could not reach the mesh backend. Check that http://127.0.0.1:8000 is running. ${
+        error instanceof Error ? error.message : String(error)
+      }`.trim()
+    );
+  }
+
+  if (!response.ok) {
+    const details = await response.text().catch(() => "");
+    throw new Error(`Mesh generation failed with ${response.status}. ${details}`.trim());
+  }
+
+  return response.json();
+}

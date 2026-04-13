@@ -82,7 +82,7 @@ export default function TerrainOsmPanel({ viewerRef }) {
   const [showBuildings, setShowBuildings] = useState(true);
   const [defaultFloorHeight, setDefaultFloorHeight] = useState(3.2);
   const [defaultBuildingHeight, setDefaultBuildingHeight] = useState(12);
-  const [buildingOpacity, setBuildingOpacity] = useState(0.65);
+  const [buildingOpacity, setBuildingOpacity] = useState(1.0);
 
   const [showRoads, setShowRoads] = useState(true);
   const [roadWidthScale, setRoadWidthScale] = useState(1.0);
@@ -289,66 +289,36 @@ export default function TerrainOsmPanel({ viewerRef }) {
           </button>
         </div>
 
-        <div className="terrain-row">
-          <button type="button" onClick={() => setBounds(DEFAULT_BOUNDS)}>
-            Preset
-          </button>
-          <button type="button" onClick={() => mapPickerRef.current?.setBounds?.(bounds, { fit: true })}>
-            Sync map
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              setStatus("Generating terrain...");
-              await viewerRef?.current?.generateTerrain?.();
-            }}
-          >
-            Generate terrain
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              setStatus("Generating terrain + OSM...");
-              await viewerRef?.current?.generateTerrainAndOsm?.();
-            }}
-          >
-            Terrain + OSM
-          </button>
-          <button type="button" onClick={() => viewerRef?.current?.frame?.()}>
-            Fit
-          </button>
-        </div>
-
         {activeTab === "bounds" ? (
           <>
             <div className="terrain-grid">
-              <label>
-                minLon
+              <label className="terrain-field">
                 <input
                   value={formatFixed(bounds.minLon, 6)}
                   onChange={(e) => setBounds((b) => ({ ...b, minLon: Number(e.target.value) }))}
                 />
+                <span className="terrain-field-label">MinLon</span>
               </label>
-              <label>
-                minLat
+              <label className="terrain-field">
                 <input
                   value={formatFixed(bounds.minLat, 6)}
                   onChange={(e) => setBounds((b) => ({ ...b, minLat: Number(e.target.value) }))}
                 />
+                <span className="terrain-field-label">MinLat</span>
               </label>
-              <label>
-                maxLon
+              <label className="terrain-field">
                 <input
                   value={formatFixed(bounds.maxLon, 6)}
                   onChange={(e) => setBounds((b) => ({ ...b, maxLon: Number(e.target.value) }))}
                 />
+                <span className="terrain-field-label">MaxLon</span>
               </label>
-              <label>
-                maxLat
+              <label className="terrain-field">
                 <input
                   value={formatFixed(bounds.maxLat, 6)}
                   onChange={(e) => setBounds((b) => ({ ...b, maxLat: Number(e.target.value) }))}
                 />
+                <span className="terrain-field-label">MaxLat</span>
               </label>
             </div>
 
@@ -359,40 +329,40 @@ export default function TerrainOsmPanel({ viewerRef }) {
         {activeTab === "terrain" ? (
           <>
             <div className="terrain-grid terrain-grid-3">
-              <label>
-                exaggeration
+              <label className="terrain-field">
                 <input
                   type="number"
                   step="0.1"
                   value={exaggeration}
                   onChange={(e) => setExaggeration(clampNumber(e.target.value, 0, 20))}
                 />
+                <span className="terrain-field-label">Exaggeration</span>
               </label>
-              <label>
-                wireframe
+              <label className="terrain-field">
                 <input type="checkbox" checked={wireframe} onChange={(e) => setWireframe(!!e.target.checked)} />
+                <span className="terrain-field-label">Wireframe</span>
               </label>
-              <label>
-                hillshade
+              <label className="terrain-field">
                 <input
                   type="checkbox"
                   checked={hillshadeEnabled}
                   onChange={(e) => setHillshadeEnabled(!!e.target.checked)}
                 />
+                <span className="terrain-field-label">Hillshade</span>
               </label>
             </div>
 
             <div className="terrain-grid terrain-grid-3">
-              <label>
-                terrain
+              <label className="terrain-field">
                 <input type="checkbox" checked={showTerrain} onChange={(e) => setShowTerrain(!!e.target.checked)} />
+                <span className="terrain-field-label">Terrain</span>
               </label>
-              <label>
-                color mode
+              <label className="terrain-field">
                 <select value={colorMode} onChange={(e) => setColorMode(e.target.value)}>
                   <option value="ramp">ramp</option>
                   <option value="grayscale">grayscale</option>
                 </select>
+                <span className="terrain-field-label">Color mode</span>
               </label>
             </div>
           </>
@@ -401,36 +371,36 @@ export default function TerrainOsmPanel({ viewerRef }) {
         {activeTab === "buildings" ? (
           <>
             <div className="terrain-grid terrain-grid-2">
-              <label>
-                buildings
+              <label className="terrain-field">
                 <input type="checkbox" checked={showBuildings} onChange={(e) => setShowBuildings(!!e.target.checked)} />
+                <span className="terrain-field-label">Buildings</span>
               </label>
-              <label>
-                building opacity
+              <label className="terrain-field">
                 <input
                   type="number"
                   step="0.05"
                   value={buildingOpacity}
                   onChange={(e) => setBuildingOpacity(clampNumber(e.target.value, 0, 1))}
                 />
+                <span className="terrain-field-label">Building opacity</span>
               </label>
-              <label>
-                default floor height
+              <label className="terrain-field">
                 <input
                   type="number"
                   step="0.1"
                   value={defaultFloorHeight}
                   onChange={(e) => setDefaultFloorHeight(clampNumber(e.target.value, 1, 10))}
                 />
+                <span className="terrain-field-label">Default floor height</span>
               </label>
-              <label>
-                default building height
+              <label className="terrain-field">
                 <input
                   type="number"
                   step="0.5"
                   value={defaultBuildingHeight}
                   onChange={(e) => setDefaultBuildingHeight(clampNumber(e.target.value, 1, 200))}
                 />
+                <span className="terrain-field-label">Default building height</span>
               </label>
             </div>
           </>
@@ -439,27 +409,27 @@ export default function TerrainOsmPanel({ viewerRef }) {
         {activeTab === "roads" ? (
           <>
             <div className="terrain-grid terrain-grid-2">
-              <label>
-                roads
+              <label className="terrain-field">
                 <input type="checkbox" checked={showRoads} onChange={(e) => setShowRoads(!!e.target.checked)} />
+                <span className="terrain-field-label">Roads</span>
               </label>
-              <label>
-                road opacity
+              <label className="terrain-field">
                 <input
                   type="number"
                   step="0.05"
                   value={roadOpacity}
                   onChange={(e) => setRoadOpacity(clampNumber(e.target.value, 0, 1))}
                 />
+                <span className="terrain-field-label">Road opacity</span>
               </label>
-              <label>
-                road width scale
+              <label className="terrain-field">
                 <input
                   type="number"
                   step="0.1"
                   value={roadWidthScale}
                   onChange={(e) => setRoadWidthScale(clampNumber(e.target.value, 0.1, 8))}
                 />
+                <span className="terrain-field-label">Road width scale</span>
               </label>
             </div>
           </>
@@ -538,8 +508,7 @@ export default function TerrainOsmPanel({ viewerRef }) {
               {analysisStatus ? <div className="terrain-meta" style={{ marginTop: 8 }}>{analysisStatus}</div> : null}
 
               <div className="terrain-grid terrain-grid-2">
-                <label>
-                  mode
+                <label className="terrain-field">
                   <select
                     value={analysisSettings.mode}
                     onChange={(e) =>
@@ -552,9 +521,9 @@ export default function TerrainOsmPanel({ viewerRef }) {
                     <option value="epw">epw</option>
                     <option value="geometric">geometric</option>
                   </select>
+                  <span className="terrain-field-label">Mode</span>
                 </label>
-                <label>
-                  timestep (min)
+                <label className="terrain-field">
                   <input
                     type="number"
                     step="5"
@@ -563,9 +532,9 @@ export default function TerrainOsmPanel({ viewerRef }) {
                       setAnalysisSettings((s) => ({ ...s, timestep: clampNumber(e.target.value, 5, 180) }))
                     }
                   />
+                  <span className="terrain-field-label">Timestep (min)</span>
                 </label>
-                <label>
-                  start date
+                <label className="terrain-field">
                   <input
                     type="date"
                     value={analysisSettings.analysisPeriod.start_date}
@@ -576,9 +545,9 @@ export default function TerrainOsmPanel({ viewerRef }) {
                       }))
                     }
                   />
+                  <span className="terrain-field-label">Start date</span>
                 </label>
-                <label>
-                  end date
+                <label className="terrain-field">
                   <input
                     type="date"
                     value={analysisSettings.analysisPeriod.end_date}
@@ -589,9 +558,9 @@ export default function TerrainOsmPanel({ viewerRef }) {
                       }))
                     }
                   />
+                  <span className="terrain-field-label">End date</span>
                 </label>
-                <label>
-                  start hour
+                <label className="terrain-field">
                   <input
                     type="number"
                     step="1"
@@ -603,9 +572,9 @@ export default function TerrainOsmPanel({ viewerRef }) {
                       }))
                     }
                   />
+                  <span className="terrain-field-label">Start hour</span>
                 </label>
-                <label>
-                  end hour
+                <label className="terrain-field">
                   <input
                     type="number"
                     step="1"
@@ -617,9 +586,9 @@ export default function TerrainOsmPanel({ viewerRef }) {
                       }))
                     }
                   />
+                  <span className="terrain-field-label">End hour</span>
                 </label>
-                <label>
-                  grid spacing (m)
+                <label className="terrain-field">
                   <input
                     type="number"
                     step="1"
@@ -628,9 +597,9 @@ export default function TerrainOsmPanel({ viewerRef }) {
                       setAnalysisSettings((s) => ({ ...s, gridSpacing: clampNumber(e.target.value, 1, 200) }))
                     }
                   />
+                  <span className="terrain-field-label">Grid spacing (m)</span>
                 </label>
-                <label>
-                  north (deg)
+                <label className="terrain-field">
                   <input
                     type="number"
                     step="1"
@@ -639,6 +608,7 @@ export default function TerrainOsmPanel({ viewerRef }) {
                       setAnalysisSettings((s) => ({ ...s, north: clampNumber(e.target.value, -180, 180) }))
                     }
                   />
+                  <span className="terrain-field-label">North (deg)</span>
                 </label>
               </div>
             </div>

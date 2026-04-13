@@ -27,15 +27,8 @@ app.add_middleware(
 
 app.include_router(epw_router)
 app.include_router(direct_sun_hours_router)
-app.include_router(epw_router, prefix="/analysis-api")
-app.include_router(direct_sun_hours_router, prefix="/analysis-api")
 
 
 @app.get("/health")
 def health():
-    return {"ok": True}
-
-
-@app.get("/analysis-api/health")
-def analysis_api_health():
     return {"ok": True}
