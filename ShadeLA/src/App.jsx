@@ -240,7 +240,7 @@ function App() {
             </section>
           </div>
         </section>
-        <section className="panel"><Solutions /> </section>
+        <section className="panel" id="solutions"><Solutions /> </section>
        
         <ResourcesSections />
       </main>

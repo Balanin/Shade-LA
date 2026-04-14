@@ -9,7 +9,7 @@
       "title": "Wide Civic Plazas",
       "description": "High-traffic open areas requiring durable, large-scale coverage."
     },
-    "photo": "images/parametric_tree.jpg"
+    "photo": "Images/parametric_tree.jpg"
   },
   {
     "id": "02",
@@ -21,7 +21,7 @@
       "title": "Urban Commercial Sidewalks",
       "description": "Busy retail corridors where floor space is limited but greenery is needed."
     },
-    "photo": "images/geometric_parasol.jpg"
+    "photo": "Images/geometric_parasol.jpg"
   },
   {
     "id": "03",
@@ -33,7 +33,7 @@
       "title": "Corporate or Academic Courtyards",
       "description": "Semi-private outdoor spaces for quiet gathering or study."
     },
-    "photo": "images/minimalist_petal.jpg"
+    "photo": "Images/minimalist_petal.jpg"
   },
   {
     "id": "04",
@@ -45,7 +45,7 @@
       "title": "Creative District Pocket Parks",
       "description": "Small-scale urban infill focused on artistic expression and rest."
     },
-    "photo": "images/chromatic_lounger.jpg"
+    "photo": "Images/chromatic_lounger.jpg"
   },
   {
     "id": "05",
@@ -57,7 +57,7 @@
       "title": "Eco-Friendly Residential Zones",
       "description": "Community-focused areas prioritizing natural cooling and biodiversity."
     },
-    "photo": "images/biophilic_lily_pad.jpg"
+    "photo": "Images/biophilic_lily_pad.jpg"
   },
   {
     "id": "06",
@@ -69,7 +69,7 @@
       "title": "Transit Hubs & Tech Parks",
       "description": "High-connectivity areas where commuters or workers need power and data."
     },
-    "photo": "images/smart_pod.jpg"
+    "photo": "Images/smart_pod.jpg"
   },
   {
     "id": "07",
@@ -81,6 +81,6 @@
       "title": "Coastal Promenades",
       "description": "Beach-adjacent recreation areas subject to high winds and salt air."
     },
-    "photo": "images/sail_lookout.jpg"
+    "photo": "Images/sail_lookout.jpg"
   }
 ]
