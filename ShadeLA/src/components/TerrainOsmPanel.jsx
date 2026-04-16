@@ -447,7 +447,14 @@ export default function TerrainOsmPanel({ viewerRef }) {
                     setAnalysisStatus("");
                     setStatus("Running solar analysis...");
                     try {
-                      const result = await viewerRef?.current?.runSolarAnalysis?.(analysisSettings);
+                      const shadeMeshes = viewerRef?.current?.getShadeMeshesForAnalysis?.() || [];
+                      const shadeInstances = viewerRef?.current?.getShadeInstances?.() || [];
+                      if (shadeInstances.length && !shadeMeshes.length) {
+                        setAnalysisStatus(
+                          "Warning: Shade instances exist, but shade mesh export is empty. Shade structures may not affect solar results for these presets."
+                        );
+                      }
+                      const result = await viewerRef?.current?.runSolarAnalysis?.(analysisSettings, { shadeMeshes });
                       setAnalysisResult(result || null);
                       setStatus("Solar analysis ready");
                     } catch (e) {

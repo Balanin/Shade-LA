@@ -4,6 +4,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 import { fetchDemWithFallback } from "../terrain-osm/api.js";
 import { createGeoReference } from "../terrain-osm/geo.js";
@@ -21,6 +23,7 @@ import {
   updateSunHoursOverlay,
 } from "../terrain-osm/analysis-visualize.js";
 import { runDirectSunHoursAnalysis, runMeshFromPolylines } from "../terrain-osm/analysis-api.js";
+import { sampleAnalysisColor } from "../terrain-osm/analysis-colors.js";
 
 function clampNumber(v, min, max) {
   const n = Number(v);
@@ -50,6 +53,12 @@ function defaultBounds() {
 const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatus }, ref) {
   const apiKey = import.meta.env.VITE_OPENTOPO_API_KEY;
 
+  const SHADE_TARGET_MAX_DIM_METERS = 20;
+
+  const shadePresetsRef = useRef(new Map());
+  const [shadePresetsLoadError, setShadePresetsLoadError] = useState(null);
+  const [shadePresetsUiNonce, setShadePresetsUiNonce] = useState(0);
+
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
@@ -68,12 +77,33 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const meshOverlayRef = useRef(null);
   const sunPathGroupRef = useRef(null);
 
+  const shadeGroupRef = useRef(null);
+  const shadeInstancesRef = useRef([]);
+  const shadePresetCacheRef = useRef(new Map());
+  const selectedShadeRef = useRef(null);
+  const dragShadeRef = useRef(null);
+  const carryShadeRef = useRef(null);
+  const onShadesChangedRef = useRef(null);
+
+  const [shadeUiInstances, setShadeUiInstances] = useState([]);
+  const [selectedShadeUi, setSelectedShadeUi] = useState(null);
+  const [selectedShadeMenuPos, setSelectedShadeMenuPos] = useState(null);
+  const [shadeDropdownSelectedId, setShadeDropdownSelectedId] = useState("");
+  const [shadeScaleDraft, setShadeScaleDraft] = useState("");
+  const shadeMenuRef = useRef(null);
+
+  const [analysisLegend, setAnalysisLegend] = useState(null);
+
   const selectedBuildingRef = useRef(null);
   const [selectedBuildingUi, setSelectedBuildingUi] = useState(null);
   const [selectedBuildingHeight, setSelectedBuildingHeight] = useState(0);
   const [selectedBuildingMenuPos, setSelectedBuildingMenuPos] = useState(null);
   const modifiedBuildingsRef = useRef(new Map());
   const [modifiedBuildingsUi, setModifiedBuildingsUi] = useState([]);
+
+  const SHADE_GROUND_CLEARANCE_METERS = 0.05;
+  const SHADE_SCALE_MIN = 0.001;
+  const SHADE_SCALE_MAX = 100000;
 
   const [drawMode, setDrawMode] = useState(false);
   const drawModeRef = useRef(false);
@@ -83,6 +113,113 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const drawStateRef = useRef({ polylines: [], current: [] });
   const currentLineRef = useRef(null);
   const previewLineRef = useRef(null);
+
+  const clearSelectedShade = () => {
+    selectedShadeRef.current = null;
+    carryShadeRef.current = null;
+    setSelectedShadeUi(null);
+    setSelectedShadeMenuPos(null);
+    setShadeScaleDraft("");
+  };
+
+  useEffect(() => {
+    const mount = mountRef.current;
+    if (!mount) return;
+    if (!selectedShadeUi || !selectedShadeMenuPos) return;
+
+    const clampMenuToMount = () => {
+      const menuEl = shadeMenuRef.current;
+      const mountRect = mount.getBoundingClientRect();
+      const mountW = Math.max(1, mountRect.width);
+      const mountH = Math.max(1, mountRect.height);
+      const menuW = Math.max(1, menuEl?.offsetWidth ?? 240);
+      const menuH = Math.max(1, menuEl?.offsetHeight ?? 160);
+
+      const pad = 8;
+      const yOffset = 14;
+
+      const minX = menuW / 2 + pad;
+      const maxX = mountW - menuW / 2 - pad;
+      const minY = menuH + yOffset + pad;
+      const maxY = mountH - pad;
+
+      const nextX = clampNumber(selectedShadeMenuPos.x, minX, maxX);
+      const nextY = clampNumber(selectedShadeMenuPos.y, minY, maxY);
+
+      setSelectedShadeMenuPos((prev) => {
+        if (!prev) return prev;
+        const dx = Math.abs(prev.x - nextX);
+        const dy = Math.abs(prev.y - nextY);
+        if (dx < 0.5 && dy < 0.5) return prev;
+        return { x: nextX, y: nextY };
+      });
+    };
+
+    clampMenuToMount();
+    window.addEventListener("resize", clampMenuToMount);
+    return () => window.removeEventListener("resize", clampMenuToMount);
+  }, [selectedShadeUi, selectedShadeMenuPos]);
+
+  const parseUserNumber = (raw) => {
+    const s = String(raw ?? "").trim();
+    if (!s) return null;
+    const normalized = s.replace(",", ".");
+    const n = Number(normalized);
+    if (!Number.isFinite(n)) return null;
+    return n;
+  };
+
+  useEffect(() => {
+    if (!selectedShadeUi?.id) {
+      setShadeScaleDraft("");
+      return;
+    }
+    const v = Number(selectedShadeUi.scale ?? 1);
+    setShadeScaleDraft(Number.isFinite(v) ? String(v) : "1");
+  }, [selectedShadeUi?.id]);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        setShadePresetsLoadError(null);
+        const resp = await fetch("/3dmodels/manifest.json", { cache: "no-store" });
+        if (!resp.ok) {
+          throw new Error(`manifest fetch failed: ${resp.status}`);
+        }
+        const json = await resp.json();
+        const raw = Array.isArray(json?.models) ? json.models : [];
+        const models = raw
+          .map((x) => String(x || "").trim())
+          .filter(Boolean)
+          .filter((x) => !x.startsWith("/") && !x.includes(".."));
+
+        const next = new Map();
+        for (const filename of models) {
+          const id = filename;
+          next.set(id, {
+            id,
+            label: filename,
+            objUrl: `/3dmodels/${encodeURIComponent(filename)}`,
+            defaultCoolingFactor: 0.1,
+            defaultScale: null,
+            defaultRotationY: 0,
+          });
+        }
+
+        if (!alive) return;
+        shadePresetsRef.current = next;
+        setShadePresetsUiNonce((x) => x + 1);
+      } catch (e) {
+        if (!alive) return;
+        setShadePresetsLoadError(String(e?.message || e));
+      }
+    };
+    load();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const clearMeshOverlay = () => {
     const scene = sceneRef.current;
@@ -297,6 +434,9 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const box = new THREE.Box3().setFromObject(terrain);
     if (buildingGroupRef.current) {
       box.union(new THREE.Box3().setFromObject(buildingGroupRef.current));
+    }
+    if (shadeGroupRef.current) {
+      box.union(new THREE.Box3().setFromObject(shadeGroupRef.current));
     }
     return box;
   };
@@ -1044,6 +1184,340 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     return out.clone();
   };
 
+  const screenToPointOnBuildingsOrTerrain = (ev) => {
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    if (!camera || !renderer || !scene) return null;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    const y = -(((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
+    const ndc = new THREE.Vector2(x, y);
+
+    const raycaster = raycasterRef.current;
+    raycaster.setFromCamera(ndc, camera);
+
+    const exaggeration = clampNumber(displayOptions?.exaggeration ?? 1, 0.0001, 1000);
+
+    const buildingGroup = buildingGroupRef.current;
+    if (buildingGroup) {
+      const hits = raycaster.intersectObjects(buildingGroup.children || [], true);
+      if (hits?.length) {
+        const hit = hits.find((h) => h.object?.userData?.building) ?? hits[0];
+        if (hit?.point) {
+          const pt = hit.point.clone();
+          pt.y = pt.y / exaggeration;
+          pt.y += 0.18 / exaggeration;
+          return pt;
+        }
+      }
+    }
+
+    return screenToPointOnTerrain(ev);
+  };
+
+  const notifyShadesChanged = () => {
+    const cb = onShadesChangedRef.current;
+    setShadeUiInstances(shadeInstancesRef.current.map((x) => ({ ...x })));
+    if (!cb) return;
+    try {
+      cb(shadeInstancesRef.current.map((x) => ({ ...x })));
+    } catch {
+      // ignore
+    }
+  };
+
+  const getShadeIntersectionsAtEvent = (ev) => {
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+    const group = shadeGroupRef.current;
+    if (!camera || !renderer || !group) return null;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+    const y = -(((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
+    const ndc = new THREE.Vector2(x, y);
+
+    const raycaster = raycasterRef.current;
+    raycaster.setFromCamera(ndc, camera);
+    const hits = raycaster.intersectObjects(group.children || [], true);
+    if (!hits?.length) return null;
+    return hits[0];
+  };
+
+  const pickShadeInstanceAtEvent = (ev) => {
+    const hit = getShadeIntersectionsAtEvent(ev);
+    if (!hit) return null;
+    let obj = hit.object;
+    while (obj && obj !== shadeGroupRef.current) {
+      const id = obj?.userData?.shadeInstanceId;
+      if (id) return id;
+      obj = obj.parent;
+    }
+    return null;
+  };
+
+  const ensurePresetLoaded = async (preset) => {
+    if (!preset?.id || !preset?.objUrl) {
+      throw new Error("Invalid shade preset");
+    }
+    const cached = shadePresetCacheRef.current.get(preset.id);
+    if (cached) return cached;
+
+    const url = String(preset.objUrl || "");
+    const ext = url.split("?")[0].split("#")[0].toLowerCase();
+
+    let group;
+    if (ext.endsWith(".obj")) {
+      const loader = new OBJLoader();
+      group = await loader.loadAsync(url);
+    } else if (ext.endsWith(".glb") || ext.endsWith(".gltf")) {
+      const loader = new GLTFLoader();
+      const gltf = await loader.loadAsync(url);
+      group = gltf?.scene || gltf?.scenes?.[0];
+    } else {
+      throw new Error(`Unsupported shade model format: ${url}`);
+    }
+
+    if (!group) {
+      throw new Error(`Failed to load shade model: ${url}`);
+    }
+    group.updateMatrixWorld(true);
+
+    const vertices = [];
+    const faces = [];
+    let vOffset = 0;
+    group.traverse((obj) => {
+      if (!obj?.isMesh) return;
+      const geom = obj.geometry;
+      const posAttr = geom?.attributes?.position;
+      if (!posAttr || !posAttr.array) return;
+
+      const world = obj.matrixWorld;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < posAttr.count; i += 1) {
+        v.fromBufferAttribute(posAttr, i);
+        v.applyMatrix4(world);
+        vertices.push([v.x, v.y, v.z]);
+      }
+
+      const idx = geom.index;
+      if (idx && idx.count >= 3) {
+        for (let i = 0; i + 2 < idx.count; i += 3) {
+          faces.push([vOffset + idx.getX(i), vOffset + idx.getX(i + 1), vOffset + idx.getX(i + 2)]);
+        }
+      } else {
+        for (let i = 0; i + 2 < posAttr.count; i += 3) {
+          faces.push([vOffset + i, vOffset + i + 1, vOffset + i + 2]);
+        }
+      }
+      vOffset += posAttr.count;
+    });
+
+    if (vertices.length < 3 || faces.length < 1) {
+      throw new Error("OBJ produced empty mesh");
+    }
+
+    const bbox = new THREE.Box3();
+    bbox.setFromArray(vertices.flat());
+    const size = new THREE.Vector3();
+    bbox.getSize(size);
+    const baseMaxDim = Math.max(1e-6, size.x, size.y, size.z);
+    const normalizedScale = SHADE_TARGET_MAX_DIM_METERS / baseMaxDim;
+
+    const baseMinY = bbox.min.y;
+
+    const entry = { preset, baseMesh: { vertices, faces }, object3d: group, normalizedScale, baseMinY };
+    shadePresetCacheRef.current.set(preset.id, entry);
+    return entry;
+  };
+
+  const applyShadeYOffsetToSurfacePoint = (presetId, scale, surfacePt) => {
+    const entry = shadePresetCacheRef.current.get(presetId);
+    if (!entry || !surfacePt) return surfacePt;
+    const baseMinY = Number(entry.baseMinY ?? 0) || 0;
+    const yLift = (-baseMinY * (Number(scale) || 1)) + SHADE_GROUND_CLEARANCE_METERS;
+    return new THREE.Vector3(surfacePt.x, surfacePt.y + yLift, surfacePt.z);
+  };
+
+  const addShadeInstance = async (preset, position) => {
+    const scene = sceneRef.current;
+    if (!scene) return null;
+
+    const group = shadeGroupRef.current;
+    if (!group) return null;
+
+    const entry = await ensurePresetLoaded(preset);
+
+    const plannedScale = Number(preset.defaultScale ?? entry.normalizedScale ?? 1) || 1;
+    const snappedPos = applyShadeYOffsetToSurfacePoint(preset.id, plannedScale, position);
+
+    const id = `shade_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
+    const inst = {
+      id,
+      presetId: preset.id,
+      position: { x: snappedPos.x, y: snappedPos.y, z: snappedPos.z },
+      rotationY: Number(preset.defaultRotationY ?? 0) || 0,
+      scale: plannedScale,
+      coolingFactor: Number(preset.defaultCoolingFactor ?? 0.1) || 0.1,
+    };
+    shadeInstancesRef.current = [...shadeInstancesRef.current, inst];
+
+    const obj = entry.object3d.clone(true);
+    obj.traverse((child) => {
+      child.userData = { ...(child.userData || {}), shadeInstanceId: id };
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+    obj.position.set(snappedPos.x, snappedPos.y, snappedPos.z);
+    obj.rotation.set(0, THREE.MathUtils.degToRad(inst.rotationY), 0);
+    obj.scale.setScalar(inst.scale);
+    obj.name = `shade-instance-${id}`;
+    obj.userData = { ...(obj.userData || {}), shadeInstanceId: id };
+    group.add(obj);
+    notifyShadesChanged();
+    return inst;
+  };
+
+  const updateShadeInstance = (id, patch) => {
+    const list = shadeInstancesRef.current;
+    const idx = list.findIndex((x) => x.id === id);
+    if (idx < 0) return;
+
+    const prev = list[idx];
+
+    let nextPos = prev.position;
+    if (patch?.position) {
+      nextPos = { ...prev.position, ...patch.position };
+    }
+
+    let nextScale = prev.scale;
+    if (patch && Object.prototype.hasOwnProperty.call(patch, "scale")) {
+      nextScale = Number(patch.scale || 0) || 1;
+    }
+
+    if (!patch?.position && patch && Object.prototype.hasOwnProperty.call(patch, "scale") && prev?.presetId) {
+      const entry = shadePresetCacheRef.current.get(prev.presetId);
+      const baseMinY = Number(entry?.baseMinY ?? 0) || 0;
+      const groundY = (prev.position?.y ?? 0) + (baseMinY * (Number(prev.scale) || 1));
+      nextPos = { ...(nextPos || prev.position), y: groundY - (baseMinY * nextScale) };
+    }
+
+    const next = {
+      ...prev,
+      ...(patch || {}),
+      position: nextPos,
+      scale: nextScale,
+    };
+
+    const nextList = [...list];
+    nextList[idx] = next;
+    shadeInstancesRef.current = nextList;
+
+    const group = shadeGroupRef.current;
+    if (group) {
+      const obj = group.getObjectByName(`shade-instance-${id}`);
+      if (obj) {
+        obj.position.set(next.position.x, next.position.y, next.position.z);
+        obj.rotation.set(0, THREE.MathUtils.degToRad(next.rotationY || 0), 0);
+        obj.scale.setScalar(next.scale || 1);
+      }
+    }
+
+    if (selectedShadeRef.current === id) {
+      setSelectedShadeUi({ ...next });
+      if (patch && Object.prototype.hasOwnProperty.call(patch, "scale")) {
+        setShadeScaleDraft(String(nextScale));
+      }
+    }
+
+    notifyShadesChanged();
+  };
+
+  const removeShadeInstance = (id) => {
+    const group = shadeGroupRef.current;
+    if (group) {
+      const obj = group.getObjectByName(`shade-instance-${id}`);
+      if (obj) {
+        group.remove(obj);
+        try {
+          obj.traverse((child) => {
+            child.geometry?.dispose?.();
+            if (Array.isArray(child.material)) {
+              child.material.forEach((m) => m?.dispose?.());
+            } else {
+              child.material?.dispose?.();
+            }
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    shadeInstancesRef.current = shadeInstancesRef.current.filter((x) => x.id !== id);
+    if (selectedShadeRef.current === id) {
+      clearSelectedShade();
+    }
+    notifyShadesChanged();
+  };
+
+  const clearShadeInstances = () => {
+    const group = shadeGroupRef.current;
+    if (group) {
+      const children = [...(group.children || [])];
+      children.forEach((c) => {
+        group.remove(c);
+        try {
+          c.traverse((child) => {
+            child.geometry?.dispose?.();
+            if (Array.isArray(child.material)) {
+              child.material.forEach((m) => m?.dispose?.());
+            } else {
+              child.material?.dispose?.();
+            }
+          });
+        } catch {
+          // ignore
+        }
+      });
+    }
+    shadeInstancesRef.current = [];
+    selectedShadeRef.current = null;
+    notifyShadesChanged();
+  };
+
+  const getShadeMeshesForAnalysis = () => {
+    const out = [];
+    for (const inst of shadeInstancesRef.current) {
+      const entry = shadePresetCacheRef.current.get(inst.presetId);
+      if (!entry?.baseMesh) continue;
+      const base = entry.baseMesh;
+
+      const m = new THREE.Matrix4();
+      const pos = new THREE.Vector3(inst.position.x, inst.position.y, inst.position.z);
+      const rot = new THREE.Euler(0, THREE.MathUtils.degToRad(inst.rotationY || 0), 0, "XYZ");
+      const scl = new THREE.Vector3(1, 1, 1).multiplyScalar(inst.scale || 1);
+      m.compose(pos, new THREE.Quaternion().setFromEuler(rot), scl);
+
+      const vertices = (base.vertices || []).map((v) => {
+        const p = new THREE.Vector3(Number(v?.[0] ?? 0), Number(v?.[1] ?? 0), Number(v?.[2] ?? 0));
+        p.applyMatrix4(m);
+        return [p.x, p.y, p.z];
+      });
+
+      out.push({
+        vertices,
+        faces: base.faces || [],
+        cooling_factor: clampNumber(inst.coolingFactor ?? 0, 0, 1),
+      });
+    }
+    return out;
+  };
+
   function clearAnalysis() {
     const scene = sceneRef.current;
     const overlay = analysisOverlayRef.current;
@@ -1052,6 +1526,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     scene.remove(overlay);
     disposeSunHoursOverlay(overlay);
     analysisOverlayRef.current = null;
+    setAnalysisLegend(null);
   }
 
   function disposeTerrainAndLayers() {
@@ -1131,6 +1606,21 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     controls.update();
   }
 
+  async function withRetries(task, { retries = 2, baseDelayMs = 600, maxDelayMs = 4000 } = {}) {
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        return await task();
+      } catch (e) {
+        lastError = e;
+        if (attempt >= retries) break;
+        const delay = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt));
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    throw lastError;
+  }
+
   async function generate({ includeOsmLayers }) {
     const scene = sceneRef.current;
     if (!scene) return;
@@ -1181,28 +1671,53 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       frameScene();
 
       if (includeOsmLayers) {
-        reportStatus("Fetching OSM buildings...");
-        const buildingFeatures = await fetchBuildingsGeoJson(currentBounds, reportStatus);
-        buildingFeaturesRef.current = buildingFeatures;
-        const bGroup = createBuildingGroup(buildingFeatures, parsed, geoReference, buildingOptions);
-        buildingGroupRef.current = bGroup;
-        bGroup.traverse((obj) => {
-          if (obj?.isMesh) {
-            obj.castShadow = true;
-            obj.receiveShadow = true;
-          }
-        });
-        scene.add(bGroup);
+        reportStatus("Fetching OSM buildings & roads...");
 
-        reportStatus("Fetching OSM roads...");
-        const roadFeatures = await fetchRoadGeoJson(currentBounds, reportStatus);
-        const rGroup = createRoadGroup(roadFeatures, parsed, geoReference, roadOptions);
-        roadGroupRef.current = rGroup;
-        scene.add(rGroup);
+        const [buildingsResult, roadsResult] = await Promise.allSettled([
+          withRetries(() => fetchBuildingsGeoJson(currentBounds, reportStatus), { retries: 2 }),
+          withRetries(() => fetchRoadGeoJson(currentBounds, reportStatus), { retries: 2 }),
+        ]);
 
-        frameScene();
+        let loadedAny = false;
+        const failed = [];
 
-        reportStatus("Terrain + OSM ready");
+        if (buildingsResult.status === "fulfilled") {
+          const buildingFeatures = buildingsResult.value;
+          buildingFeaturesRef.current = buildingFeatures;
+          const bGroup = createBuildingGroup(buildingFeatures, parsed, geoReference, buildingOptions);
+          buildingGroupRef.current = bGroup;
+          bGroup.traverse((obj) => {
+            if (obj?.isMesh) {
+              obj.castShadow = true;
+              obj.receiveShadow = true;
+            }
+          });
+          scene.add(bGroup);
+          loadedAny = true;
+        } else {
+          failed.push(`buildings: ${String(buildingsResult.reason?.message || buildingsResult.reason)}`);
+          buildingFeaturesRef.current = [];
+        }
+
+        if (roadsResult.status === "fulfilled") {
+          const roadFeatures = roadsResult.value;
+          const rGroup = createRoadGroup(roadFeatures, parsed, geoReference, roadOptions);
+          roadGroupRef.current = rGroup;
+          scene.add(rGroup);
+          loadedAny = true;
+        } else {
+          failed.push(`roads: ${String(roadsResult.reason?.message || roadsResult.reason)}`);
+        }
+
+        if (loadedAny) {
+          frameScene();
+        }
+
+        if (failed.length) {
+          reportStatus(`Terrain ready (OSM partial). ${failed.join(" | ")}`);
+        } else {
+          reportStatus("Terrain + OSM ready");
+        }
       } else {
         reportStatus("Terrain ready");
       }
@@ -1246,7 +1761,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       clearSolar() {
         clearAnalysis();
       },
-      async runSolarAnalysis(settings, { epwStationId } = {}) {
+      async runSolarAnalysis(settings, { epwStationId, shadeMeshes } = {}) {
         const terrainState = terrainStateRef.current;
         const geoReference = geoRefRef.current;
         const buildingFeatures = buildingFeaturesRef.current || [];
@@ -1263,6 +1778,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
           buildingOptions,
           settings,
           epwStationId,
+          shadeMeshes,
         });
 
         const scene = sceneRef.current;
@@ -1271,6 +1787,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
           const overlay = createSunHoursOverlay(result, displayOptions.exaggeration);
           analysisOverlayRef.current = overlay;
           scene.add(overlay);
+          setAnalysisLegend({ min: Number(result?.min ?? 0), max: Number(result?.max ?? 0) });
         }
 
         return result;
@@ -1283,12 +1800,36 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
         const overlay = createSunHoursOverlay(result, displayOptions.exaggeration);
         analysisOverlayRef.current = overlay;
         scene.add(overlay);
+        setAnalysisLegend({ min: Number(result?.min ?? 0), max: Number(result?.max ?? 0) });
       },
       showSunPath(settings) {
         showSunPath(settings);
       },
       clearSunPath() {
         clearSunPath();
+      },
+
+      setOnShadesChanged(cb) {
+        onShadesChangedRef.current = typeof cb === "function" ? cb : null;
+        notifyShadesChanged();
+      },
+      async addShadeFromPreset(preset, position) {
+        return addShadeInstance(preset, position);
+      },
+      updateShadeInstance(id, patch) {
+        updateShadeInstance(id, patch);
+      },
+      removeShadeInstance(id) {
+        removeShadeInstance(id);
+      },
+      clearShadeInstances() {
+        clearShadeInstances();
+      },
+      getShadeInstances() {
+        return shadeInstancesRef.current.map((x) => ({ ...x }));
+      },
+      getShadeMeshesForAnalysis() {
+        return getShadeMeshesForAnalysis();
       },
     }),
     [displayOptions]
@@ -1337,6 +1878,12 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     scene.add(lightTarget);
     directionalLight.target = lightTarget;
     scene.add(directionalLight);
+
+    const shadeGroup = new THREE.Group();
+    shadeGroup.name = "shade-instances";
+    shadeGroup.renderOrder = 34;
+    shadeGroupRef.current = shadeGroup;
+    scene.add(shadeGroup);
 
     sceneRef.current = scene;
     cameraRef.current = camera;
@@ -1390,7 +1937,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
 
       controls.dispose();
       renderer.dispose();
-      renderer.domElement.remove();
+      mount.removeChild(renderer.domElement);
 
       sceneRef.current = null;
       cameraRef.current = null;
@@ -1424,13 +1971,46 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const canvas = renderer?.domElement;
     if (!canvas) return;
 
+    const handleDragOver = (ev) => {
+      ev.preventDefault();
+    };
+
+    const handleDrop = async (ev) => {
+      ev.preventDefault();
+      if (drawModeRef.current) return;
+      const presetId = ev.dataTransfer?.getData?.("text/shade-preset") || ev.dataTransfer?.getData?.("text/plain");
+      if (!presetId) return;
+      const pt = screenToPointOnBuildingsOrTerrain(ev);
+      if (!pt) return;
+      const preset = shadePresetsRef.current.get(presetId);
+      if (!preset) return;
+      try {
+        await addShadeInstance(preset, pt);
+      } catch {
+        // ignore
+      }
+    };
+
     const handleMouseDown = (ev) => {
+      if (ev.button !== 0) return;
+
       if (!drawModeRef.current) {
+        const id = pickShadeInstanceAtEvent(ev);
+        if (!id) return;
+        ev.preventDefault();
+        selectedShadeRef.current = id;
+        const inst = shadeInstancesRef.current.find((x) => x.id === id) || null;
+        setSelectedShadeUi(inst ? { ...inst } : null);
+        const mount = mountRef.current;
+        const rect = mount?.getBoundingClientRect?.();
+        if (rect) {
+          setSelectedShadeMenuPos({ x: ev.clientX - rect.left, y: ev.clientY - rect.top });
+        } else {
+          setSelectedShadeMenuPos({ x: ev.clientX, y: ev.clientY });
+        }
         return;
       }
-      if (ev.button !== 0) {
-        return;
-      }
+
       ev.preventDefault();
       const pt = screenToPointOnTerrain(ev);
       if (!pt) {
@@ -1445,15 +2025,61 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     };
 
     const handleMouseMove = (ev) => {
-      if (!drawModeRef.current) return;
+      if (!drawModeRef.current) {
+        if (!carryShadeRef.current?.id) return;
+        const pt = screenToPointOnBuildingsOrTerrain(ev);
+        if (!pt) return;
+        const movingId = carryShadeRef.current.id;
+        const movingInst = shadeInstancesRef.current.find((x) => x.id === movingId);
+        const nextPt = movingInst
+          ? applyShadeYOffsetToSurfacePoint(movingInst.presetId, movingInst.scale, pt)
+          : pt;
+        updateShadeInstance(movingId, { position: { x: nextPt.x, y: nextPt.y, z: nextPt.z } });
+        return;
+      }
       const pt = screenToPointOnTerrain(ev);
       updatePreviewLine(pt);
+    };
+
+    const handleKeyDown = (ev) => {
+      if (ev.key === "Escape") {
+        if (carryShadeRef.current?.id || selectedShadeMenuPos) {
+          clearSelectedShade();
+          return;
+        }
+      }
+      if (ev.key !== "Delete") return;
+      const id = selectedShadeRef.current;
+      if (!id) return;
+      removeShadeInstance(id);
     };
 
     const handleDoubleClick = (ev) => {
       if (drawModeRef.current) {
         return;
       }
+
+      if (carryShadeRef.current?.id) {
+        const pt = screenToPointOnBuildingsOrTerrain(ev);
+        if (!pt) return;
+        const movingId = carryShadeRef.current.id;
+        const movingInst = shadeInstancesRef.current.find((x) => x.id === movingId);
+        const nextPt = movingInst
+          ? applyShadeYOffsetToSurfacePoint(movingInst.presetId, movingInst.scale, pt)
+          : pt;
+        updateShadeInstance(movingId, { position: { x: nextPt.x, y: nextPt.y, z: nextPt.z } });
+        carryShadeRef.current = null;
+        return;
+      }
+
+      const shadeId = pickShadeInstanceAtEvent(ev);
+      if (shadeId) {
+        selectedShadeRef.current = shadeId;
+        carryShadeRef.current = { id: shadeId };
+        ev.preventDefault();
+        return;
+      }
+
       const mesh = pickBuildingAtEvent(ev);
       if (!mesh) {
         clearSelectedBuilding();
@@ -1462,12 +2088,18 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       selectBuildingMesh(mesh);
     };
 
+    canvas.addEventListener("dragover", handleDragOver);
+    canvas.addEventListener("drop", handleDrop);
     canvas.addEventListener("mousedown", handleMouseDown);
     canvas.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("keydown", handleKeyDown);
     canvas.addEventListener("dblclick", handleDoubleClick);
     return () => {
+      canvas.removeEventListener("dragover", handleDragOver);
+      canvas.removeEventListener("drop", handleDrop);
       canvas.removeEventListener("mousedown", handleMouseDown);
       canvas.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("keydown", handleKeyDown);
       canvas.removeEventListener("dblclick", handleDoubleClick);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1699,6 +2331,21 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const currentPts = drawStateRef.current.current.length;
   const totalFinal = drawStateRef.current.polylines.length;
 
+  // force re-render when presets are loaded
+  void shadePresetsUiNonce;
+  const shadePresets = Array.from(shadePresetsRef.current.values());
+
+  const analysisLegendGradient = useMemo(() => {
+    if (!analysisLegend) return null;
+    const stops = [];
+    for (let i = 0; i <= 10; i += 1) {
+      const t = i / 10;
+      const c = sampleAnalysisColor(t);
+      stops.push(`rgb(${c.r}, ${c.g}, ${c.b}) ${(t * 100).toFixed(1)}%`);
+    }
+    return `linear-gradient(to top, ${stops.join(", ")})`;
+  }, [analysisLegend]);
+
   return (
     <div
       ref={mountRef}
@@ -1906,6 +2553,269 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
         ) : null}
       </div>
 
+      <div
+        style={{
+          position: "absolute",
+          top: 72,
+          left: 10,
+          width: 320,
+          maxWidth: "calc(100% - 20px)",
+          display: "grid",
+          gap: 10,
+          padding: "10px 12px",
+          borderRadius: 12,
+          background: "rgba(10, 18, 30, 0.65)",
+          border: "1px solid rgba(255,255,255,0.12)",
+          color: "rgba(230,240,255,0.95)",
+          backdropFilter: "blur(6px)",
+          zIndex: 5,
+          pointerEvents: "auto",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 750, opacity: 0.95 }}>Shades</div>
+          <button
+            type="button"
+            onClick={() => clearShadeInstances()}
+            disabled={!shadeUiInstances.length}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "rgba(239,68,68,0.85)",
+              color: "#e5e7eb",
+              cursor: shadeUiInstances.length ? "pointer" : "not-allowed",
+              opacity: shadeUiInstances.length ? 1 : 0.5,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Clear
+          </button>
+        </div>
+
+        <div style={{ fontSize: 12, opacity: 0.8 }}>
+          Drag preset onto the city. Double-click a shade to carry, double-click again to place. Delete key removes selected.
+        </div>
+
+        {shadePresetsLoadError ? (
+          <div style={{ fontSize: 12, opacity: 0.9, color: "rgba(248,113,113,0.95)" }}>
+            Failed to load presets: {shadePresetsLoadError}
+          </div>
+        ) : null}
+
+        <details
+          style={{
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(2,6,23,0.22)",
+            padding: "6px 8px",
+          }}
+        >
+          <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 700, opacity: 0.95, userSelect: "none" }}>
+            presets ({shadePresets.length})
+          </summary>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+            {shadePresets.map((p) => (
+              <div
+                key={p.id}
+                draggable
+                onDragStart={(e) => {
+                  try {
+                    e.dataTransfer.setData("text/shade-preset", p.id);
+                    e.dataTransfer.setData("text/plain", p.id);
+                    e.dataTransfer.effectAllowed = "copy";
+                  } catch {
+                    // ignore
+                  }
+                }}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  background: "rgba(17,24,39,0.65)",
+                  cursor: "grab",
+                }}
+                title="Drag onto the city"
+              >
+                <div style={{ fontSize: 12, fontWeight: 650, whiteSpace: "nowrap" }}>{p.label}</div>
+                <div style={{ fontSize: 11, opacity: 0.8 }}>
+                  shade: {Math.round((p.defaultCoolingFactor || 0) * 100)}%
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+
+        {!shadePresetsLoadError && shadePresets.length === 0 ? (
+          <div style={{ fontSize: 12, opacity: 0.85 }}>
+            No presets found. Add filenames to <code>/3dmodels/manifest.json</code>.
+          </div>
+        ) : null}
+
+        <div style={{ fontSize: 12, opacity: 0.82 }}>placed: {shadeUiInstances.length}</div>
+      </div>
+
+      {analysisLegend && analysisLegendGradient ? (
+        <div
+          style={{
+            position: "absolute",
+            left: 10,
+            bottom: 10,
+            zIndex: 5,
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "stretch",
+            gap: 10,
+            padding: "10px 10px",
+            borderRadius: 12,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(10, 18, 30, 0.65)",
+            color: "rgba(230,240,255,0.95)",
+            backdropFilter: "blur(6px)",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              width: 16,
+              height: 180,
+              borderRadius: 10,
+              background: analysisLegendGradient,
+              border: "1px solid rgba(255,255,255,0.18)",
+            }}
+          />
+          <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: 180 }}>
+            <div style={{ fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{analysisLegend.max.toFixed(2)}</div>
+            <div style={{ fontSize: 11, opacity: 0.8, textAlign: "left" }}>solar</div>
+            <div style={{ fontSize: 12, fontVariantNumeric: "tabular-nums" }}>{analysisLegend.min.toFixed(2)}</div>
+          </div>
+        </div>
+      ) : null}
+
+      {selectedShadeUi ? (
+        <div
+          ref={shadeMenuRef}
+          style={{
+            position: "absolute",
+            left: selectedShadeMenuPos?.x ?? 10,
+            top: selectedShadeMenuPos?.y ?? 10,
+            transform: "translate(-50%, calc(-100% - 14px))",
+            zIndex: 6,
+            padding: "10px 12px",
+            borderRadius: 12,
+            border: "1px solid rgba(255, 255, 255, 0.18)",
+            background: "rgba(10, 18, 30, 0.72)",
+            color: "rgba(255, 255, 255, 0.95)",
+            minWidth: 240,
+            pointerEvents: "auto",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>{selectedShadeUi.presetId ?? "Shade"}</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+              shade (%)
+              <input
+                type="number"
+                step="1"
+                value={Math.round(clampNumber(selectedShadeUi.coolingFactor ?? 0, 0, 1) * 100)}
+                onChange={(e) => {
+                  const v = clampNumber(e.target.value, 0, 100) / 100;
+                  updateShadeInstance(selectedShadeUi.id, { coolingFactor: v });
+                }}
+                style={{
+                  padding: "6px 8px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255, 255, 255, 0.15)",
+                  background: "rgba(0, 0, 0, 0.25)",
+                  color: "#e5e7eb",
+                  outline: "none",
+                  width: 92,
+                }}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+              scale
+              <input
+                type="text"
+                inputMode="decimal"
+                value={shadeScaleDraft}
+                onChange={(e) => setShadeScaleDraft(e.target.value)}
+                onBlur={() => {
+                  const parsed = parseUserNumber(shadeScaleDraft);
+                  if (parsed === null) {
+                    const v = Number(selectedShadeUi.scale ?? 1);
+                    setShadeScaleDraft(Number.isFinite(v) ? String(v) : "1");
+                    return;
+                  }
+                  updateShadeInstance(selectedShadeUi.id, { scale: clampNumber(parsed, SHADE_SCALE_MIN, SHADE_SCALE_MAX) });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  e.currentTarget.blur();
+                }}
+                style={{
+                  padding: "6px 8px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255, 255, 255, 0.15)",
+                  background: "rgba(0, 0, 0, 0.25)",
+                  color: "#e5e7eb",
+                  outline: "none",
+                  width: 92,
+                }}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+              rotY
+              <input
+                type="number"
+                step="1"
+                value={Number(selectedShadeUi.rotationY ?? 0)}
+                onChange={(e) => updateShadeInstance(selectedShadeUi.id, { rotationY: Number(e.target.value) })}
+                style={{
+                  padding: "6px 8px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(255, 255, 255, 0.15)",
+                  background: "rgba(0, 0, 0, 0.25)",
+                  color: "#e5e7eb",
+                  outline: "none",
+                  width: 92,
+                }}
+              />
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => removeShadeInstance(selectedShadeUi.id)}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 10,
+                border: "1px solid rgba(255, 255, 255, 0.15)",
+                background: "rgba(239,68,68,0.85)",
+                color: "#e5e7eb",
+                cursor: "pointer",
+              }}
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={() => clearSelectedShade()}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 10,
+                border: "1px solid rgba(255, 255, 255, 0.15)",
+                background: "rgba(17, 24, 39, 0.8)",
+                color: "#e5e7eb",
+                cursor: "pointer",
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {selectedBuildingUi ? (
         <div
           style={{
@@ -1987,7 +2897,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
         </div>
       ) : null}
 
-      {modifiedBuildingsUi?.length ? (
+      {shadeUiInstances.length || modifiedBuildingsUi?.length ? (
         <div
           style={{
             position: "absolute",
@@ -1996,58 +2906,120 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
             zIndex: 5,
             display: "flex",
             flexDirection: "column",
-            gap: 8,
+            gap: 10,
             padding: "10px 12px",
             borderRadius: 12,
             border: "1px solid rgba(255, 255, 255, 0.18)",
             background: "rgba(10, 18, 30, 0.72)",
             color: "rgba(255, 255, 255, 0.95)",
-            minWidth: 220,
-            maxWidth: 280,
+            minWidth: 260,
+            maxWidth: 320,
             pointerEvents: "auto",
           }}
         >
-          <div style={{ fontWeight: 700 }}>Modified buildings</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {modifiedBuildingsUi.map((b) => (
-              <div
-                key={b.key}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  padding: "6px 8px",
-                  borderRadius: 10,
-                  border: "1px solid rgba(255, 255, 255, 0.12)",
-                  background: "rgba(0, 0, 0, 0.18)",
-                }}
-              >
-                <div style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {b.label ?? "Building"}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => revertModifiedBuilding(b.key)}
-                  title="Revert building"
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: 8,
-                    border: "1px solid rgba(255,255,255,0.15)",
-                    background: "rgba(239, 68, 68, 0.85)",
-                    color: "#0b1220",
-                    cursor: "pointer",
-                    fontWeight: 900,
-                    lineHeight: "24px",
-                    padding: 0,
-                  }}
-                >
-                  ×
-                </button>
+          {shadeUiInstances.length ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontWeight: 700 }}>Shades</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {shadeUiInstances.map((s) => (
+                  <div
+                    key={s.id}
+                    onClick={() => {
+                      setShadeDropdownSelectedId(s.id);
+                      selectedShadeRef.current = s.id;
+                      setSelectedShadeUi({ ...s });
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: "6px 8px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(255, 255, 255, 0.12)",
+                      background: "rgba(0, 0, 0, 0.18)",
+                      cursor: "pointer",
+                      opacity: selectedShadeRef.current === s.id ? 1 : 0.92,
+                    }}
+                    title="Click to select. Click in 3D to edit settings."
+                  >
+                    <div style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {s.presetId ?? "Shade"}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        removeShadeInstance(s.id);
+                      }}
+                      title="Delete shade"
+                      style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 8,
+                        border: "1px solid rgba(255,255,255,0.15)",
+                        background: "rgba(239, 68, 68, 0.85)",
+                        color: "#0b1220",
+                        cursor: "pointer",
+                        fontWeight: 900,
+                        lineHeight: "24px",
+                        padding: 0,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          ) : null}
+
+          {modifiedBuildingsUi?.length ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontWeight: 700 }}>Modified buildings</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {modifiedBuildingsUi.map((b) => (
+                  <div
+                    key={b.key}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: "6px 8px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(255, 255, 255, 0.12)",
+                      background: "rgba(0, 0, 0, 0.18)",
+                    }}
+                  >
+                    <div style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {b.label ?? "Building"}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => revertModifiedBuilding(b.key)}
+                      title="Revert building"
+                      style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 8,
+                        border: "1px solid rgba(255,255,255,0.15)",
+                        background: "rgba(239, 68, 68, 0.85)",
+                        color: "#0b1220",
+                        cursor: "pointer",
+                        fontWeight: 900,
+                        lineHeight: "24px",
+                        padding: 0,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

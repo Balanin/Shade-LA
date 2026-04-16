@@ -57,6 +57,55 @@ def build_building_intersector(building_mesh: dict | None):
     return trimesh.ray.ray_triangle.RayMeshIntersector(mesh)
 
 
+def build_shade_intersectors(shade_meshes: list[dict] | None):
+    if not shade_meshes or not isinstance(shade_meshes, list):
+        return []
+
+    out: list[tuple[float, trimesh.ray.ray_triangle.RayMeshIntersector]] = []
+    for item in shade_meshes:
+        if not item or not isinstance(item, dict):
+            continue
+        try:
+            factor = float(item.get("cooling_factor", 0.0) or 0.0)
+        except Exception:
+            factor = 0.0
+        factor = float(max(0.0, min(1.0, factor)))
+        if factor <= 0.0:
+            continue
+
+        vertices = np.asarray(item.get("vertices", []), dtype=np.float64)
+        faces = np.asarray(item.get("faces", []), dtype=np.int64)
+        if len(vertices) == 0 or len(faces) == 0:
+            continue
+
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        intersector = trimesh.ray.ray_triangle.RayMeshIntersector(mesh)
+        out.append((factor, intersector))
+
+    return out
+
+
+def shade_cooling_factor(origin: np.ndarray, direction: np.ndarray, shade_intersectors) -> float:
+    if not shade_intersectors:
+        return 0.0
+
+    best = 0.0
+    for factor, intersector in shade_intersectors:
+        try:
+            hit = intersector.intersects_any(
+                ray_origins=np.array([origin + direction * 0.2]),
+                ray_directions=np.array([direction]),
+            )
+        except Exception:
+            continue
+        if bool(hit[0]):
+            best = max(best, float(factor))
+            if best >= 1.0:
+                return 1.0
+
+    return float(best)
+
+
 def is_occluded_by_buildings(origin: np.ndarray, direction: np.ndarray, intersector) -> bool:
     if intersector is None:
         return False

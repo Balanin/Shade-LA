@@ -51,6 +51,7 @@ def direct_sun_hours(payload: dict):
                 "raster_hash": cache.make_key(payload["terrain"]["raster"]),
             },
             "building_mesh_hash": cache.make_key(payload.get("building_mesh", {})),
+            "shade_meshes_hash": cache.make_key(payload.get("shade_meshes", [])),
             "analysis_period": payload["analysis_period"],
             "timestep": payload.get("timestep"),
             "north": payload.get("north"),

@@ -7,7 +7,14 @@ import numpy as np
 
 from ladybug.epw import EPW
 
-from server.analysis.raycast import TerrainHeightfield, build_building_intersector, is_occluded_by_buildings, is_occluded_by_terrain
+from server.analysis.raycast import (
+    TerrainHeightfield,
+    build_building_intersector,
+    build_shade_intersectors,
+    is_occluded_by_buildings,
+    is_occluded_by_terrain,
+    shade_cooling_factor,
+)
 from server.analysis.sun import generate_sun_vectors
 
 
@@ -63,6 +70,7 @@ def run_direct_sun_hours(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     building_intersector = build_building_intersector(payload.get("building_mesh"))
+    shade_intersectors = build_shade_intersectors(payload.get("shade_meshes"))
     sun_vectors = generate_sun_vectors(
         latitude=latitude,
         longitude=longitude,
@@ -88,12 +96,13 @@ def run_direct_sun_hours(payload: dict[str, Any]) -> dict[str, Any]:
 
         direction = np.asarray(vector.direction, dtype=np.float64)
         for index, point in enumerate(analysis_points):
-            origin = np.array([point[0], point[1] + 0.25, point[2]], dtype=np.float64)
+            origin = np.array([point[0], point[1] + 0.05, point[2]], dtype=np.float64)
             if is_occluded_by_terrain(origin, direction, terrain):
                 continue
             if is_occluded_by_buildings(origin, direction, building_intersector):
                 continue
-            sun_hours[index] += timestep_hours
+            factor = shade_cooling_factor(origin, direction, shade_intersectors)
+            sun_hours[index] += timestep_hours * (1.0 - float(factor))
 
     points = analysis_points.tolist()
     sun_hours_list = sun_hours.tolist()

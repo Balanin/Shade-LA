@@ -50,6 +50,7 @@ export async function runDirectSunHoursAnalysis({
   buildingOptions,
   settings,
   epwStationId,
+  shadeMeshes,
 }) {
   const terrainPayload = {
     width: terrainState.width,
@@ -64,6 +65,7 @@ export async function runDirectSunHoursAnalysis({
     bounds,
     terrain: terrainPayload,
     building_mesh: createBuildingMeshPayload(buildingFeatures, terrainState.parsedTerrain, geoReference, buildingOptions),
+    shade_meshes: Array.isArray(shadeMeshes) ? shadeMeshes : [],
     analysis_period: settings.analysisPeriod,
     timestep: settings.timestep,
     north: settings.north,
