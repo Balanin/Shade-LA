@@ -17,6 +17,7 @@
     "cesium": "^1.135.0",
     "compute-rhino3d": "^0.13.0-beta",
     "dxf-writer": "^1.18.4",
+    "dotenv": "^16.6.1",
     "earcut": "^3.0.2",
     "jszip": "^3.10.1",
     "next": "16.0.1",

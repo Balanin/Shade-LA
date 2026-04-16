@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover
+    load_dotenv = None
+
 from server.api.direct_sun_hours import router as direct_sun_hours_router
 from server.api.epw import router as epw_router
+
+
+if load_dotenv:
+    try:
+        load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env", override=False)
+    except Exception:
+        pass
 
 
 app = FastAPI(title="Terrain Solar Analysis API", version="1.0.0")

@@ -1,0 +1,186 @@
+ShadeLA Environment Variables
+
+This repository does not currently include any checked-in .env files.
+Below is a list of environment variables detected from code usage, grouped by subsystem.
+
+============================================================
+1) UI (Vite / React app in `ShadeLA/`)
+============================================================
+
+- VITE_OPENTOPO_API_KEY
+  - Purpose: API key for OpenTopography DEM (terrain) download.
+  - Where used: `src/components/TerrainOsmViewer.jsx`, `src/terrain-osm/api.js` (error message suggests `.env.local`).
+  - Required: YES if you use Terrain/OSM DEM generation.
+  - Example:
+    VITE_OPENTOPO_API_KEY=xxxxxxxxxxxxxxxx
+
+- VITE_ANALYSIS_API_BASE_URL
+  - Purpose: Base URL for the solar analysis backend API.
+  - Where used: `src/terrain-osm/analysis-api.js`
+  - Required: NO (defaults to `http://127.0.0.1:8000`), but needed if backend runs elsewhere.
+  - Example:
+    VITE_ANALYSIS_API_BASE_URL=http://127.0.0.1:8001
+
+- VITE_CADMAPPER_URL
+  - Purpose: URL for the CAD/3D (Next) app used in the UI.
+  - Where used: `src/App.jsx`
+  - Required: NO (defaults to `http://localhost:3001`).
+  - Example:
+    VITE_CADMAPPER_URL=http://localhost:3001
+
+- VITE_COMPUTE_KEY
+  - Purpose: Rhino Compute API key used by the Vite proxy for `/compute`.
+  - Where used: `vite.config.ts`
+  - Required: Only if you use the `/compute` proxy route.
+  - Notes: Code falls back to `COMPUTE_KEY` or `RHINO_COMPUTE_KEY` if `VITE_COMPUTE_KEY` is not set.
+  - Example:
+    VITE_COMPUTE_KEY=shadela-local
+
+============================================================
+2) Solar analysis backend (Python / FastAPI in `server/`)
+============================================================
+
+- EPW_STATION_CATALOG_URL
+  - Purpose: Optional URL to a JSON catalog of EPW weather stations (for climate mode).
+  - Where used: `server/weather/epw_fetch.py`
+  - Required: NO. If missing, climate mode may be unavailable and geometric mode still works.
+  - Alternative: You can provide a local file `server/cache/epw_stations.json` instead.
+  - Example:
+    EPW_STATION_CATALOG_URL=https://example.com/epw_stations.json
+
+============================================================
+3) CAD/3D app (Next.js in `cad-3d/`)
+============================================================
+
+- CESIUM_ION_TOKEN
+  - Purpose: Cesium Ion access token.
+  - Where used: `cad-3d/next.config.ts` maps it to `NEXT_PUBLIC_CESIUM_ION_TOKEN`.
+  - Required: YES if you use Cesium map features.
+  - Example:
+    CESIUM_ION_TOKEN=eyJhbGciOi...
+
+- NEXT_PUBLIC_CESIUM_BASE_URL
+  - Purpose: Path/URL for Cesium static assets.
+  - Where used: `cad-3d/src/components/CesiumMap.tsx` (defaults to `/cesium`)
+  - Required: NO in most local setups.
+  - Example:
+    NEXT_PUBLIC_CESIUM_BASE_URL=/cesium
+
+- NEXT_PUBLIC_RHINO_COMPUTE_URL
+  - Purpose: Rhino Compute base URL used by CAD/3D app.
+  - Where used: `cad-3d/src/app/dashboard/page.tsx`
+  - Required: Only if CAD/3D needs to talk to Rhino Compute.
+  - Example:
+    NEXT_PUBLIC_RHINO_COMPUTE_URL=http://localhost:6500
+
+- COMPUTE_URL
+  - Purpose: Rhino Compute base URL (server-side routes).
+  - Where used: `cad-3d/src/app/api/compute/health/route.ts`
+  - Required: YES if you call CAD/3D API routes that proxy to compute.
+  - Example:
+    COMPUTE_URL=http://localhost:6500
+
+- COMPUTE_KEY
+  - Purpose: Rhino Compute API key.
+  - Where used: `cad-3d/src/app/api/compute/health/route.ts`, and also used as fallback in `vite.config.ts`.
+  - Required: YES if you call compute.
+  - Example:
+    COMPUTE_KEY=shadela-local
+
+- RHINO_COMPUTE_KEY
+  - Purpose: Alternate name for Rhino Compute API key.
+  - Where used: fallback in `vite.config.ts`.
+  - Required: NO (use `COMPUTE_KEY` or `VITE_COMPUTE_KEY` instead).
+  - Example:
+    RHINO_COMPUTE_KEY=shadela-local
+
+- COMPUTE_APPSERVER_URL
+  - Purpose: Base URL for Grasshopper appserver/compute appserver.
+  - Where used: `cad-3d/src/app/api/analyze-city/route.ts` (defaults to `http://localhost:6501`).
+  - Required: NO unless you use analyze-city.
+  - Example:
+    COMPUTE_APPSERVER_URL=http://localhost:6501
+
+============================================================
+4) CAD export scripts / API tuning (mostly used in `cad-3d/`)
+============================================================
+
+These affect export behaviour (terrain/buildings scaling). Most have sane defaults.
+
+- EXPORT_API_BASE
+  - Purpose: Base URL for export scripts.
+  - Where used: `cad-3d/scripts/usgs-export/index.ts` (defaults to `http://localhost:3000`).
+  - Example:
+    EXPORT_API_BASE=http://localhost:3000
+
+- TERRAIN_Z_EXAGGERATION
+  - Purpose: Vertical exaggeration for terrain generation/export.
+  - Where used: `cad-3d/scripts/usgs-export/index.ts`, `cad-3d/src/app/api/export-dxf/route.ts`, `cad-3d/src/app/api/export-3dm/route.ts`
+  - Example:
+    TERRAIN_Z_EXAGGERATION=5
+
+- BUILDINGS_Z_EXAGGERATION
+  - Purpose: Vertical exaggeration for buildings.
+  - Where used: `cad-3d/src/app/api/export-dxf/route.ts`, `cad-3d/src/app/api/export-3dm/route.ts`
+  - Example:
+    BUILDINGS_Z_EXAGGERATION=1
+
+- BUILDINGS_Z_OFFSET
+  - Purpose: Vertical offset for buildings.
+  - Where used: `cad-3d/src/app/api/export-dxf/route.ts`, `cad-3d/src/app/api/export-3dm/route.ts`
+  - Example:
+    BUILDINGS_Z_OFFSET=0
+
+- BUILDINGS_CLEARANCE_FT
+  - Purpose: Clearance above ground (feet) when exporting buildings.
+  - Where used: `cad-3d/src/app/api/export-dxf/route.ts`, `cad-3d/src/app/api/export-3dm/route.ts`
+  - Example:
+    BUILDINGS_CLEARANCE_FT=0.5
+
+- TERRAIN_MAX_HEIGHT
+  - Purpose: Cap maximum terrain height.
+  - Where used: `cad-3d/src/app/api/export-dxf/route.ts`, `cad-3d/src/app/api/export-3dm/route.ts`
+  - Example:
+    TERRAIN_MAX_HEIGHT=99999
+
+- TERRAIN_SCALE_FEET
+  - Purpose: Horizontal terrain scale in feet (export).
+  - Where used: `cad-3d/src/app/api/export-dxf/route.ts`
+  - Example:
+    TERRAIN_SCALE_FEET=1.5
+
+- DEM_VERTICAL_SCALE
+  - Purpose: Vertical scale multiplier for DEM.
+  - Where used: `cad-3d/src/app/api/export-3dm/route.ts`
+  - Example:
+    DEM_VERTICAL_SCALE=1
+
+- HORIZONTAL_SCALE_Y
+  - Purpose: Additional scaling factor (Y axis).
+  - Where used: `cad-3d/src/app/api/export-dxf/route.ts`, `cad-3d/src/app/api/export-3dm/route.ts`
+  - Example:
+    HORIZONTAL_SCALE_Y=1
+
+============================================================
+Suggested .env templates
+============================================================
+
+A) `ShadeLA/.env.local` (Vite UI)
+
+VITE_OPENTOPO_API_KEY=
+VITE_ANALYSIS_API_BASE_URL=http://127.0.0.1:8001
+VITE_CADMAPPER_URL=http://localhost:3001
+VITE_COMPUTE_KEY=shadela-local
+
+B) `ShadeLA/server/.env` (Python API)
+
+EPW_STATION_CATALOG_URL=
+
+C) `ShadeLA/cad-3d/.env.local` (Next app)
+
+CESIUM_ION_TOKEN=
+NEXT_PUBLIC_RHINO_COMPUTE_URL=http://localhost:6500
+COMPUTE_URL=http://localhost:6500
+COMPUTE_KEY=shadela-local
+COMPUTE_APPSERVER_URL=http://localhost:6501
+

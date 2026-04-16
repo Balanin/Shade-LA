@@ -2,7 +2,7 @@ import React from "react";
 
 function PowerBIReport() {
   const embedUrl =
-    "https://app.powerbi.com/reportEmbed?reportId=31137e43-9ad3-4c68-be9c-1d04d2d30965&autoAuth=true&ctid=0b71261a-495f-4ea9-9911-da844b9402ef";
+    "https://app.powerbi.com/view?r=eyJrIjoiZjIzY2MxM2QtYjczOC00NmRlLTk4MmYtOGM4YjVhMjc4ZWRhIiwidCI6ImVlYzI2MzU0LWYxNjItNGUwMC1hMzBiLTg1NmQ0MDU4NDU5ZiIsImMiOjZ9";
 
   const scale = 1.2;
 

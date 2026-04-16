@@ -94,6 +94,9 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
 
   const [analysisLegend, setAnalysisLegend] = useState(null);
 
+  const presetThumbErrorRef = useRef(new Set());
+  const [presetThumbNonce, setPresetThumbNonce] = useState(0);
+
   const selectedBuildingRef = useRef(null);
   const [selectedBuildingUi, setSelectedBuildingUi] = useState(null);
   const [selectedBuildingHeight, setSelectedBuildingHeight] = useState(0);
@@ -2334,6 +2337,14 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   // force re-render when presets are loaded
   void shadePresetsUiNonce;
   const shadePresets = Array.from(shadePresetsRef.current.values());
+  void presetThumbNonce;
+
+  const presetPreviewUrl = (preset) => {
+    const label = String(preset?.label || "");
+    if (!label) return null;
+    const svgName = label.replace(/\.[^/.]+$/, ".svg");
+    return `/3dmodels/${encodeURIComponent(svgName)}`;
+  };
 
   const analysisLegendGradient = useMemo(() => {
     if (!analysisLegend) return null;
@@ -2637,10 +2648,28 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
                 }}
                 title="Drag onto the city"
               >
-                <div style={{ fontSize: 12, fontWeight: 650, whiteSpace: "nowrap" }}>{p.label}</div>
-                <div style={{ fontSize: 11, opacity: 0.8 }}>
-                  shade: {Math.round((p.defaultCoolingFactor || 0) * 100)}%
-                </div>
+                {!presetThumbErrorRef.current.has(p.id) && presetPreviewUrl(p) ? (
+                  <img
+                    src={presetPreviewUrl(p)}
+                    alt={p.label}
+                    draggable={false}
+                    onError={() => {
+                      presetThumbErrorRef.current.add(p.id);
+                      setPresetThumbNonce((n) => n + 1);
+                    }}
+                    style={{
+                      display: "block",
+                      width: 92,
+                      height: 56,
+                      objectFit: "contain",
+                      marginBottom: 6,
+                      filter: "drop-shadow(0 1px 1px rgba(0,0,0,0.35))",
+                    }}
+                  />
+                ) : (
+                  <div style={{ fontSize: 12, fontWeight: 650, whiteSpace: "nowrap" }}>{p.label}</div>
+                )}
+                <div style={{ fontSize: 11, opacity: 0.8 }}>shade: {Math.round((p.defaultCoolingFactor || 0) * 100)}%</div>
               </div>
             ))}
           </div>
