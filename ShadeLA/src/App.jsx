@@ -4,7 +4,7 @@ import PowerBIReport from "./components/PowerBIReport";
 import GrasshopperPanel from "./components/GrasshopperPanel";
 import TerrainOsmPanel from "./components/TerrainOsmPanel";
 import TerrainOsmViewer from "./components/TerrainOsmViewer";
-import CanopyTreesSection from "./components/CanopyTreesSection";
+import Solutions from "./components/Solutions";
 
 function App() {
   const [selectedArea, setSelectedArea] = useState(null);
@@ -29,7 +29,7 @@ function App() {
       { href: "#overview", label: "Overview" },
       { href: "#analytics", label: "PowerBI" },
       { href: "#workspace", label: "Map + Unreal" },
-      { href: "#canopy-trees", label: "Canopy / Trees" },
+      { href: "#solutions", label: "Shade Solutions" },
     ],
     []
   );
@@ -238,8 +238,9 @@ function App() {
             </section>
           </div>
         </section>
-
-        <CanopyTreesSection />
+        <section id="solutions" className="panel panel-grasshopper">
+          <Solutions />
+        </section>
       </main>
     </div>
   );
