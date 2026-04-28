@@ -1,8 +1,8 @@
 import osmtogeojson from "osmtogeojson";
 import * as THREE from "three";
 import { boundsToKey, lonLatToLocalMeters, sampleRasterElevation } from "./geo.js";
+import { fetchOverpassJson, mergeFeatures, splitBounds } from "./overpass.js";
 
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 const roadCache = new Map();
 const ROAD_SURFACE_OFFSET = 0.18;
 const ROAD_THICKNESS = 0.28;
@@ -321,28 +321,32 @@ export async function fetchRoadGeoJson(bounds, logger = console.log) {
   const query = buildRoadQuery(bounds);
   logger("Fetching OSM roads from Overpass...");
 
-  let response;
+  const parseFeatures = (osmJson) => {
+    const geoJson = osmtogeojson(osmJson);
+    return filterRoadFeatures(geoJson);
+  };
+
+  let features;
 
   try {
-    response = await fetch(OVERPASS_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain;charset=UTF-8",
-      },
-      body: query,
-    });
+    const osmJson = await fetchOverpassJson(query, logger);
+    features = parseFeatures(osmJson);
   } catch (error) {
-    throw new Error(`Road request failed due to network or CORS issues. ${error instanceof Error ? error.message : String(error)}`);
-  }
+    logger(
+      `Overpass roads failed for bbox; retrying with tiled bbox. ${error instanceof Error ? error.message : String(error)}`
+    );
 
-  if (!response.ok) {
-    const details = await response.text().catch(() => "");
-    throw new Error(`Overpass request failed with ${response.status}. ${details}`.trim());
-  }
+    const tiles = splitBounds(bounds);
+    const tileResults = await Promise.all(
+      tiles.map(async (tile) => {
+        const tileQuery = buildRoadQuery(tile);
+        const tileJson = await fetchOverpassJson(tileQuery, logger);
+        return parseFeatures(tileJson);
+      })
+    );
 
-  const osmJson = await response.json();
-  const geoJson = osmtogeojson(osmJson);
-  const features = filterRoadFeatures(geoJson);
+    features = mergeFeatures(tileResults);
+  }
 
   roadCache.set(cacheKey, features);
   logger(`Received ${features.length} road features from Overpass.`);

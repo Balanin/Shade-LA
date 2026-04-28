@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import osmtogeojson from "osmtogeojson";
 import { boundsToKey, lonLatToLocalMeters, sampleRasterElevation } from "./geo.js";
+import { fetchOverpassJson, mergeFeatures, splitBounds } from "./overpass.js";
 
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 const buildingCache = new Map();
 
 function parseNumericMeters(value) {
@@ -171,30 +171,32 @@ export async function fetchBuildingsGeoJson(bounds, logger = console.log) {
   const query = buildOverpassQuery(bounds);
   logger("Fetching OSM buildings from Overpass...");
 
-  let response;
+  const parseFeatures = (osmJson) => {
+    const geoJson = osmtogeojson(osmJson);
+    return filterBuildingFeatures(geoJson);
+  };
+
+  let features;
 
   try {
-    response = await fetch(OVERPASS_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain;charset=UTF-8",
-      },
-      body: query,
-    });
+    const osmJson = await fetchOverpassJson(query, logger);
+    features = parseFeatures(osmJson);
   } catch (error) {
-    throw new Error(
-      `Building request failed due to network or CORS issues. ${error instanceof Error ? error.message : String(error)}`
+    logger(
+      `Overpass buildings failed for bbox; retrying with tiled bbox. ${error instanceof Error ? error.message : String(error)}`
     );
-  }
 
-  if (!response.ok) {
-    const details = await response.text().catch(() => "");
-    throw new Error(`Overpass request failed with ${response.status}. ${details}`.trim());
-  }
+    const tiles = splitBounds(bounds);
+    const tileResults = await Promise.all(
+      tiles.map(async (tile) => {
+        const tileQuery = buildOverpassQuery(tile);
+        const tileJson = await fetchOverpassJson(tileQuery, logger);
+        return parseFeatures(tileJson);
+      })
+    );
 
-  const osmJson = await response.json();
-  const geoJson = osmtogeojson(osmJson);
-  const features = filterBuildingFeatures(geoJson);
+    features = mergeFeatures(tileResults);
+  }
 
   buildingCache.set(cacheKey, features);
   logger(`Received ${features.length} building features from Overpass.`);
@@ -219,7 +221,10 @@ export function createBuildingGroup(features, parsedTerrain, geoReference, optio
   for (const feature of features) {
     const polygonSets = polygonSetsFromFeature(feature);
     const properties = getBuildingHeightProperties(feature.properties ?? {}, options);
-    const extrusionHeight = Math.max(0.5, properties.height);
+    const extrusionHeight = Number(properties.height);
+    if (!Number.isFinite(extrusionHeight) || extrusionHeight <= 0) {
+      continue;
+    }
 
     for (const rings of polygonSets) {
       const shape = createShapeFromRingSet(rings, geoReference);
@@ -338,7 +343,10 @@ export function createBuildingMeshPayload(features, parsedTerrain, geoReference,
   for (const feature of features ?? []) {
     const polygonSets = polygonSetsFromFeature(feature);
     const properties = getBuildingHeightProperties(feature.properties ?? {}, options);
-    const extrusionHeight = Math.max(0.5, properties.height);
+    const extrusionHeight = Number(properties.height);
+    if (!Number.isFinite(extrusionHeight) || extrusionHeight <= 0) {
+      continue;
+    }
 
     for (const rings of polygonSets) {
       if (!rings?.length) {

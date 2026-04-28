@@ -911,8 +911,27 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const shape = meta.shape;
     const baseElevation = Number(meta.baseElevation ?? 0);
     const minHeight = Number(meta.minHeight ?? 0);
-    const height = Math.max(0.5, Number(nextHeight));
-    if (!Number.isFinite(height) || !shape) return;
+    const heightRaw = Number(nextHeight);
+    if (!Number.isFinite(heightRaw) || !shape) return;
+
+    if (heightRaw <= 0) {
+      mesh.visible = false;
+      mesh.userData.building = {
+        ...meta,
+        height: 0,
+      };
+      try {
+        if (meta.feature?.properties) {
+          meta.feature.properties.height = "0";
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const height = heightRaw;
+    mesh.visible = true;
 
     const geometry = new THREE.ExtrudeGeometry(shape, {
       depth: height,
@@ -2866,7 +2885,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
             height (m)
             <input
               type="number"
-              step="0.5"
+              step="0.1"
               value={selectedBuildingHeight}
               onChange={(e) => setSelectedBuildingHeight(e.target.value)}
               style={{
