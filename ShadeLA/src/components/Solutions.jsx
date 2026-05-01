@@ -21,6 +21,8 @@ function SolutionsCard({ solution }) {
           border: "1px solid rgba(255,255,255,0.15)",
           borderRadius: 12,
           padding: 16,
+          boxSizing: "border-box",
+          maxWidth: "100%",
           opacity: 0.85,
         }}
       >
@@ -32,71 +34,78 @@ function SolutionsCard({ solution }) {
   const imgSrc = buildImgSrc(solution.photo);
 
   return (
-    <div className="panel">
-            <img
-              src={`/${solution.photo}`}
-              alt={solution.name}
-              style={{ 
-              maxHeight: 326,
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.12)",
- 
-              width: "100%", height: "100%", objectFit: "cover" }}
-              onError={(e) => {
-                e.currentTarget.style.display = "none";
-              }}
-            />
-        <div style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.2, marginTop: 16 }}>
-         {solution.name}
-        </div>    
+    <div className="panel" style={{ boxSizing: "border-box", maxWidth: "100%", marginLeft: 12 }}>
+      <img
+        src={`/${solution.photo}`}
+        alt={solution.name}
+        style={{
+          maxHeight: 326,
+          borderRadius: 12,
+          border: "1px solid rgba(255,255,255,0.12)",
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+        }}
+        onError={(e) => {
+          e.currentTarget.style.display = "none";
+        }}
+      />
+      <div style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.2, marginTop: 16 }}>
+        {solution.name}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: 10,
+          marginTop: 12,
+          maxWidth: "100%",
+          boxSizing: "border-box",
+        }}
+      >
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-            gap: 10,
-            marginTop: 12,
-          }}
-        >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
+            gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
             gap: 24,
             marginBottom: 4,
+            maxWidth: "100%",
+            boxSizing: "border-box",
           }}
         >
           <InfoRow label="Shade Category" value={solution.shadeCategory} />
           <InfoRow label="Primary Material" value={solution.primaryMaterial} />
           <InfoRow label="Tech Integration" value={solution.techIntegration} />
         </div>
-          <div style={{ gridColumn: "1 / -1" }}>
-            <InfoRow label="Ideal Placement" value={solution.idealPlacement?.title} />
-            <InfoRow value={solution.idealPlacement?.description ?? ""} />
-          </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <InfoRow label="Ideal Placement" value={solution.idealPlacement?.title} />
+          <InfoRow value={solution.idealPlacement?.description ?? ""} />
         </div>
       </div>
+    </div>
   );
 }
 
 function InfoRow({ label, value }) {
   return (
-    <div style={{minWidth:120}}>
+    <div style={{ minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }}>
       <div
         style={{
           fontSize: 11,
           opacity: 0.65,
           marginBottom: 2,
           letterSpacing: 0.3,
+          overflowWrap: "anywhere",
         }}
       >
         {label}
       </div>
-
       <div
         style={{
           fontSize: 13,
           fontWeight: 500,
           lineHeight: 1.2,
+          overflowWrap: "anywhere",
         }}
       >
         {value}

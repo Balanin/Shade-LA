@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { sampleAnalysisColor } from "./analysis-colors.js";
 
-const HEATMAP_BASE_OFFSET = 1.2;
-const HEATMAP_RELIEF = 1.6;
+const HEATMAP_BASE_OFFSET = 0.32;
+const HEATMAP_RELIEF = 0.25;
 
 function clamp01(value) {
   return Math.min(1, Math.max(0, value));

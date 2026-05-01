@@ -449,6 +449,23 @@ export default function TerrainOsmPanel({ viewerRef }) {
                     try {
                       const shadeMeshes = viewerRef?.current?.getShadeMeshesForAnalysis?.() || [];
                       const shadeInstances = viewerRef?.current?.getShadeInstances?.() || [];
+                      if (shadeMeshes.length) {
+                        const first = shadeMeshes[0] || {};
+                        const vCount = Array.isArray(first.vertices) ? first.vertices.length : 0;
+                        const fCount = Array.isArray(first.faces) ? first.faces.length : 0;
+                        const instFactors = (shadeInstances || [])
+                          .map((s) => {
+                            const id = String(s?.id || "");
+                            const f = Number(s?.coolingFactor);
+                            const pct = Number.isFinite(f) ? Math.round(f * 100) : "?";
+                            return `${id}:${pct}%`;
+                          })
+                          .slice(0, 6)
+                          .join(", ");
+                        setAnalysisStatus(
+                          `Debug: shadeMeshes=${shadeMeshes.length} | firstShade vertices=${vCount} faces=${fCount} | coolingFactor=${first.cooling_factor} | instances=${instFactors || "(none)"}`
+                        );
+                      }
                       if (shadeInstances.length && !shadeMeshes.length) {
                         setAnalysisStatus(
                           "Warning: Shade instances exist, but shade mesh export is empty. Shade structures may not affect solar results for these presets."
@@ -456,6 +473,23 @@ export default function TerrainOsmPanel({ viewerRef }) {
                       }
                       const result = await viewerRef?.current?.runSolarAnalysis?.(analysisSettings, { shadeMeshes });
                       setAnalysisResult(result || null);
+                      if (result?.metadata) {
+                        const md = result.metadata;
+                        const shadeMeshesCount = md.shade_meshes_count ?? "?";
+                        const shadeIntersectorsCount = md.shade_intersectors_count ?? "?";
+                        const shadeRaysTested = md.shade_rays_tested ?? "?";
+                        const shadeRaysHit = md.shade_rays_hit ?? "?";
+                        const shadeFactorMax = md.shade_factor_max ?? "?";
+                        const shadeFactorAvg = md.shade_factor_avg ?? "?";
+                        const pointsInShadeBbox = md.analysis_points_in_shade_bbox ?? "?";
+                        const shadeBboxMin = md.shade_bbox_min;
+                        const shadeBboxMax = md.shade_bbox_max;
+                        const minValue = result?.min;
+                        const maxValue = result?.max;
+                        setAnalysisStatus(
+                          `Metadata: mode=${md.mode} | vectors=${md.vector_count} | grid=${md.grid_spacing} | min=${minValue} max=${maxValue} | shade_meshes=${shadeMeshesCount} | shade_intersectors=${shadeIntersectorsCount} | shade_rays_hit=${shadeRaysHit}/${shadeRaysTested} | shade_max=${shadeFactorMax} | shade_avg=${shadeFactorAvg} | points_in_shade_bbox=${pointsInShadeBbox} | shade_bbox_min=${shadeBboxMin} | shade_bbox_max=${shadeBboxMax}`
+                        );
+                      }
                       setStatus("Solar analysis ready");
                     } catch (e) {
                       setStatus("Solar analysis failed");

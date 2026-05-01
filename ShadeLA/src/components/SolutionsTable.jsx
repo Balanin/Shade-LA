@@ -171,10 +171,10 @@ export default function SolutionsTable({ data, selectedId, onSelect }) {
         ))}
       </div>
 
-      {/* Scrollable table (~4 rows height) */}
+      {/* Scrollable table (~6 rows height) */}
       <div
         style={{
-          maxHeight: 320,
+          maxHeight: 520,
           overflowY: "auto",
           overflowX: "auto",
           border: "1px solid rgba(255,255,255,0.15)",

@@ -70,7 +70,8 @@ def run_direct_sun_hours(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     building_intersector = build_building_intersector(payload.get("building_mesh"))
-    shade_intersectors = build_shade_intersectors(payload.get("shade_meshes"))
+    shade_meshes_payload = payload.get("shade_meshes")
+    shade_intersectors = build_shade_intersectors(shade_meshes_payload)
     sun_vectors = generate_sun_vectors(
         latitude=latitude,
         longitude=longitude,
@@ -88,6 +89,30 @@ def run_direct_sun_hours(payload: dict[str, Any]) -> dict[str, Any]:
     analysis_points = _generate_analysis_points(terrain, float(payload.get("grid_spacing", 10.0)))
     sun_hours = np.zeros(len(analysis_points), dtype=np.float64)
 
+    shade_bbox_min = None
+    shade_bbox_max = None
+    try:
+        if isinstance(shade_meshes_payload, list) and len(shade_meshes_payload) > 0:
+            all_vertices = []
+            for item in shade_meshes_payload:
+                if not isinstance(item, dict):
+                    continue
+                verts = np.asarray(item.get("vertices", []), dtype=np.float64)
+                if len(verts) > 0:
+                    all_vertices.append(verts)
+            if all_vertices:
+                v = np.vstack(all_vertices)
+                shade_bbox_min = v.min(axis=0)
+                shade_bbox_max = v.max(axis=0)
+    except Exception:
+        shade_bbox_min = None
+        shade_bbox_max = None
+
+    shade_rays_tested = 0
+    shade_rays_hit = 0
+    shade_factor_sum = 0.0
+    shade_factor_max = 0.0
+
     for vector in sun_vectors:
         if mode == "climate":
             dni = dni_lookup.get((vector.timestamp.month, vector.timestamp.day, vector.timestamp.hour))
@@ -102,10 +127,38 @@ def run_direct_sun_hours(payload: dict[str, Any]) -> dict[str, Any]:
             if is_occluded_by_buildings(origin, direction, building_intersector):
                 continue
             factor = shade_cooling_factor(origin, direction, shade_intersectors)
+
+            shade_rays_tested += 1
+            shade_factor_sum += float(factor)
+            if factor > 0:
+                shade_rays_hit += 1
+                if float(factor) > shade_factor_max:
+                    shade_factor_max = float(factor)
+
             sun_hours[index] += timestep_hours * (1.0 - float(factor))
 
     points = analysis_points.tolist()
     sun_hours_list = sun_hours.tolist()
+
+    shade_meshes_count = len(shade_meshes_payload) if isinstance(shade_meshes_payload, list) else 0
+    shade_intersectors_count = len(shade_intersectors) if shade_intersectors else 0
+    shade_factor_avg = (shade_factor_sum / shade_rays_tested) if shade_rays_tested > 0 else 0.0
+
+    analysis_points_in_shade_bbox = 0
+    try:
+        if shade_bbox_min is not None and shade_bbox_max is not None and len(analysis_points) > 0:
+            # x,z overlap only; y is irrelevant for "under" check.
+            pad = 0.25
+            x0 = float(shade_bbox_min[0] - pad)
+            x1 = float(shade_bbox_max[0] + pad)
+            z0 = float(shade_bbox_min[2] - pad)
+            z1 = float(shade_bbox_max[2] + pad)
+            xs = analysis_points[:, 0]
+            zs = analysis_points[:, 2]
+            mask = (xs >= x0) & (xs <= x1) & (zs >= z0) & (zs <= z1)
+            analysis_points_in_shade_bbox = int(np.count_nonzero(mask))
+    except Exception:
+        analysis_points_in_shade_bbox = 0
 
     return {
         "points": points,
@@ -119,5 +172,14 @@ def run_direct_sun_hours(payload: dict[str, Any]) -> dict[str, Any]:
             "timestep_hours": timestep_hours,
             "grid_spacing": float(payload.get("grid_spacing", 10.0)),
             "epw_used": bool(dni_lookup),
+            "shade_meshes_count": shade_meshes_count,
+            "shade_intersectors_count": shade_intersectors_count,
+            "shade_rays_tested": int(shade_rays_tested),
+            "shade_rays_hit": int(shade_rays_hit),
+            "shade_factor_max": float(shade_factor_max),
+            "shade_factor_avg": float(shade_factor_avg),
+            "shade_bbox_min": shade_bbox_min.tolist() if shade_bbox_min is not None else None,
+            "shade_bbox_max": shade_bbox_max.tolist() if shade_bbox_max is not None else None,
+            "analysis_points_in_shade_bbox": int(analysis_points_in_shade_bbox),
         },
     }
