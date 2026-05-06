@@ -3,13 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import * as Cesium from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 
-type BBox = [number, number, number, number]; // [west, south, east, north]
-
-export default function CesiumMap({
-  onExportDxfBBox,
-}: {
-  onExportDxfBBox?: (bbox: BBox) => void;
-}) {
+export default function CesiumMap() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const lastAoiRef = useRef<Cesium.Rectangle | null>(null);
@@ -23,10 +17,6 @@ export default function CesiumMap({
   const clickDrawingRef = useRef<boolean>(false);
   const clickStartRef = useRef<Cesium.Cartographic | null>(null);
   const clickLastRef = useRef<Cesium.Cartographic | null>(null);
-
-  const [places, setPlaces] = useState<{ GEOID: string; NAME: string }[]>([]);
-  const [selectedPlaceId, setSelectedPlaceId] = useState<string>("");
-  const [cityFilter, setCityFilter] = useState<string>("");
   const [webglError, setWebglError] = useState<string | null>(null);
 
   // keep ref in sync so Cesium event handlers see current mode
@@ -286,97 +276,6 @@ export default function CesiumMap({
     };
   }, []);
 
-  // Load cities (places) list for autocomplete
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await fetch("/api/places");
-        if (!res.ok) return;
-        const items = await res.json();
-        if (!cancelled) {
-          setPlaces(items);
-          if (items.length && !selectedPlaceId) {
-            setSelectedPlaceId(items[0].GEOID);
-            setCityFilter(items[0].NAME || "");
-          }
-        }
-      } catch {
-        // ignore
-      }
-    };
-    load();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function highlightCityByGeoid(geoid: string) {
-    if (!viewerRef.current || !geoid) return;
-
-    try {
-      const res = await fetch(`/api/places?geoid=${encodeURIComponent(geoid)}`);
-      if (!res.ok) return;
-      const feature = await res.json();
-      const geom = feature.geometry;
-      if (!geom || !geom.type) return;
-
-      const coords: number[][][] = [];
-      if (geom.type === "Polygon") {
-        coords.push(geom.coordinates[0]);
-      } else if (geom.type === "MultiPolygon") {
-        for (const poly of geom.coordinates) {
-          if (poly[0]) coords.push(poly[0]);
-        }
-      } else return;
-
-      const positions: Cesium.Cartesian3[] = [];
-      let west = Infinity;
-      let south = Infinity;
-      let east = -Infinity;
-      let north = -Infinity;
-
-      for (const ring of coords) {
-        for (const [lon, lat] of ring) {
-          positions.push(Cesium.Cartesian3.fromDegrees(lon, lat));
-          west = Math.min(west, lon);
-          south = Math.min(south, lat);
-          east = Math.max(east, lon);
-          north = Math.max(north, lat);
-        }
-      }
-      if (!positions.length) return;
-
-      const viewer = viewerRef.current;
-      if (!viewer) return;
-
-      // remove previous highlight
-      if (highlightEntityRef.current) {
-        viewer.entities.remove(highlightEntityRef.current);
-        highlightEntityRef.current = null;
-      }
-
-      const entity = viewer.entities.add({
-        name: `City ${geoid}`,
-        polygon: {
-          hierarchy: new Cesium.PolygonHierarchy(positions),
-          material: Cesium.Color.ORANGE.withAlpha(0.25),
-          outline: true,
-          outlineColor: Cesium.Color.ORANGE,
-        },
-      });
-      highlightEntityRef.current = entity;
-
-      const rect = safeRectangleFromDegrees(west, south, east, north);
-      if (!rect) return;
-      lastAoiRef.current = rect;
-      viewer.camera.flyTo({ destination: rect });
-    } catch {
-      // ignore
-    }
-  }
-
   async function highlightTractByGeoid(geoid: string) {
     if (!viewerRef.current || !geoid) return;
 
@@ -506,50 +405,6 @@ export default function CesiumMap({
               const east = Cesium.Math.toDegrees(rect.east);
               const north = Cesium.Math.toDegrees(rect.north);
 
-              // Ensure parent (main UI) receives bbox even if AOI selection was made earlier.
-              try {
-                if (typeof window !== "undefined" && window.parent && window.parent !== window) {
-                  window.parent.postMessage(
-                    { type: "cadmapper:bbox", bbox: [west, south, east, north] },
-                    "*"
-                  );
-                }
-              } catch {
-                // ignore
-              }
-
-              if (onExportDxfBBox) {
-                onExportDxfBBox([west, south, east, north]);
-              }
-
-              const bboxParam = [west, south, east, north].join(",");
-              const dxfUrl = `/api/export-dxf?bbox=${encodeURIComponent(bboxParam)}`;
-
-              const a = document.createElement("a");
-              a.href = dxfUrl;
-              a.download = "export.dxf";
-              a.rel = "noopener";
-              document.body.appendChild(a);
-              a.click();
-              a.remove();
-            }}
-            style={{ padding: "8px 12px", background: "#111827", color: "#fff", border: "1px solid #ffffff33", borderRadius: 6, cursor: "pointer" }}
-          >
-            Export DXF
-          </button>
-
-          <button
-            onClick={async () => {
-              const rect = lastAoiRef.current;
-              if (!rect || !viewerRef.current) {
-                alert("Сначала выделите область");
-                return;
-              }
-              const west = Cesium.Math.toDegrees(rect.west);
-              const south = Cesium.Math.toDegrees(rect.south);
-              const east = Cesium.Math.toDegrees(rect.east);
-              const north = Cesium.Math.toDegrees(rect.north);
-
               try {
                 if (typeof window !== "undefined" && window.parent && window.parent !== window) {
                   window.parent.postMessage(
@@ -565,36 +420,6 @@ export default function CesiumMap({
           >
             Analyze
           </button>
-        </div>
-
-        <div style={{ display: "flex", gap: 8 }}>
-          <label style={{ fontSize: "0.75rem", color: "#111827", background: "#e5e7eb", padding: "4px 6px", borderRadius: 4 }}>
-            City:
-            <input
-              list="city-list"
-              value={cityFilter}
-              onChange={async (e) => {
-                const value = e.target.value;
-                setCityFilter(value);
-                const query = value.trim().toLowerCase();
-                if (!query) return;
-                const match =
-                  places.find((p) => (p.NAME || "").toLowerCase() === query) ||
-                  places.find((p) => (p.NAME || "").toLowerCase().includes(query));
-                if (match) {
-                  setSelectedPlaceId(match.GEOID);
-                  await highlightCityByGeoid(match.GEOID);
-                }
-              }}
-              placeholder="Type city name..."
-              style={{ marginLeft: 4, fontSize: "0.75rem", padding: "4px 6px", borderRadius: 4, border: "1px solid #d1d5db" }}
-            />
-            <datalist id="city-list">
-              {places.map((p) => (
-                <option key={p.GEOID} value={p.NAME} />
-              ))}
-            </datalist>
-          </label>
         </div>
       </div>
     </div>
