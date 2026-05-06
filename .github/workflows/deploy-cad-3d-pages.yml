@@ -41,7 +41,8 @@ jobs:
       - name: Build UI (Vite)
         working-directory: ShadeLA
         env:
-          VITE_ANALYSIS_API_BASE_URL: https://shade-p.onrender.com
+          VITE_ANALYSIS_API_BASE_URL: ${{ secrets.VITE_ANALYSIS_API_BASE_URL || 'https://shade-p.onrender.com' }}
+          VITE_OPENTOPO_API_KEY: ${{ secrets.VITE_OPENTOPO_API_KEY }}
         run: npm run build
 
       - name: Install cad-3d
