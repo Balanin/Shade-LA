@@ -76,6 +76,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const analysisOverlayRef = useRef(null);
   const meshOverlayRef = useRef(null);
   const sunPathGroupRef = useRef(null);
+  const generationIdRef = useRef(0);
 
   const shadeGroupRef = useRef(null);
   const shadeInstancesRef = useRef([]);
@@ -1648,7 +1649,11 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const scene = sceneRef.current;
     if (!scene) return;
 
+    const myGenerationId = (generationIdRef.current += 1);
+
     const currentBounds = boundsRef.current;
+
+    const isCancelled = () => myGenerationId !== generationIdRef.current;
 
     try {
       reportStatus("Requesting DEM...");
@@ -1656,13 +1661,28 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
 
       const result = await fetchDemWithFallback(currentBounds, apiKey, reportStatus);
 
+      if (isCancelled()) return;
+
       reportStatus("Parsing GeoTIFF...");
       const parsed = await parseGeoTiff(result.arrayBuffer);
+
+      if (isCancelled()) return;
 
       const geoReference = createGeoReference(currentBounds, parsed.width, parsed.height);
       geoRefRef.current = geoReference;
 
       const meshResult = createTerrainMesh(parsed, geoReference.terrainWidth, geoReference.terrainDepth);
+
+      if (isCancelled()) {
+        try {
+          meshResult?.geometry?.dispose?.();
+          meshResult?.material?.map?.dispose?.();
+          meshResult?.material?.dispose?.();
+        } catch {
+          // ignore
+        }
+        return;
+      }
 
       const terrainState = {
         ...meshResult,
@@ -1700,6 +1720,10 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
           withRetries(() => fetchBuildingsGeoJson(currentBounds, reportStatus), { retries: 2 }),
           withRetries(() => fetchRoadGeoJson(currentBounds, reportStatus), { retries: 2 }),
         ]);
+
+        if (isCancelled()) {
+          return;
+        }
 
         let loadedAny = false;
         const failed = [];
