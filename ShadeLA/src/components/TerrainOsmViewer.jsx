@@ -2401,6 +2401,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     return `${baseUrl}3dmodels/${encodeURIComponent(svgName)}`;
   };
 
+  const presetPreviewUrl = (preset) => getPresetThumbUrl(preset);
+
   const analysisLegendGradient = useMemo(() => {
     if (!analysisLegend) return null;
     const stops = [];
