@@ -73,13 +73,13 @@ export default defineConfig({
                 res.statusCode = 200
                 res.setHeader('Content-Type', 'application/json')
                 res.end(JSON.stringify({ ok: true, url, path: outPath }))
-              } catch (e) {
+              } catch (e: any) {
                 res.statusCode = 500
                 res.setHeader('Content-Type', 'application/json')
                 res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }))
               }
             })
-          } catch (e) {
+          } catch (e: any) {
             res.statusCode = 500
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }))
@@ -194,7 +194,7 @@ export default defineConfig({
                 bbox: { west, south, east, north },
               })
             )
-          } catch (e) {
+          } catch (e: any) {
             res.statusCode = 500
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify({ ok: false, error: String((e as any)?.message || e) }))
@@ -229,13 +229,13 @@ export default defineConfig({
                 res.statusCode = 200
                 res.setHeader('Content-Type', 'application/json')
                 res.end(JSON.stringify({ ok: true, path: outPath }))
-              } catch (e) {
+              } catch (e: any) {
                 res.statusCode = 500
                 res.setHeader('Content-Type', 'application/json')
                 res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }))
               }
             })
-          } catch (e) {
+          } catch (e: any) {
             res.statusCode = 500
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }))
@@ -268,13 +268,13 @@ export default defineConfig({
                 res.statusCode = 200
                 res.setHeader('Content-Type', 'application/json')
                 res.end(JSON.stringify({ ok: true, path: outPath }))
-              } catch (e) {
+              } catch (e: any) {
                 res.statusCode = 500
                 res.setHeader('Content-Type', 'application/json')
                 res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }))
               }
             })
-          } catch (e) {
+          } catch (e: any) {
             res.statusCode = 500
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }))

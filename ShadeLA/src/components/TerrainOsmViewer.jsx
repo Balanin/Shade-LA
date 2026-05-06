@@ -186,7 +186,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const load = async () => {
       try {
         setShadePresetsLoadError(null);
-        const resp = await fetch("/3dmodels/manifest.json", { cache: "no-store" });
+        const baseUrl = import.meta.env.BASE_URL || "/";
+        const resp = await fetch(`${baseUrl}3dmodels/manifest.json`, { cache: "no-store" });
         if (!resp.ok) {
           throw new Error(`manifest fetch failed: ${resp.status}`);
         }
@@ -203,7 +204,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
           next.set(id, {
             id,
             label: filename,
-            objUrl: `/3dmodels/${encodeURIComponent(filename)}`,
+            objUrl: `${baseUrl}3dmodels/${encodeURIComponent(filename)}`,
             defaultCoolingFactor: 0.1,
             defaultScale: null,
             defaultRotationY: 0,
