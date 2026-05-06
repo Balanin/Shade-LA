@@ -2950,7 +2950,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
           style={{
             position: "absolute",
             right: 10,
-            top: 10,
+            top: 72,
             zIndex: 5,
             display: "flex",
             flexDirection: "column",
