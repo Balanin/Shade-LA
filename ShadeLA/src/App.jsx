@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import "./App.css";
 import PowerBIReport from "./components/PowerBIReport";
 import GrasshopperPanel from "./components/GrasshopperPanel";
@@ -9,8 +9,9 @@ import Solutions from "./components/Solutions";
 function App() {
   const [selectedArea, setSelectedArea] = useState(null);
   const [mapUnlocked, setMapUnlocked] = useState(false);
+  const [modelUnlocked, setModelUnlocked] = useState(false);
 
-  const terrainViewerRef = React.useRef(null);
+  const terrainViewerRef = useRef(null);
 
   const [sidebarHidden, setSidebarHidden] = useState(() => {
     try {
@@ -215,8 +216,45 @@ function App() {
               <div className="panel-header">
                 <h2>Model</h2>
               </div>
-              <div className="panel-body">
-                <TerrainOsmViewer ref={terrainViewerRef} />
+              <div className="panel-body" style={{ position: "relative" }}>
+                <div
+                  id="Model"
+                  className={modelUnlocked ? "map-unlocked" : "map-locked"}
+                  style={{ position: "absolute", inset: 0 }}
+                  onClick={() => {
+                    if (!modelUnlocked) setModelUnlocked(true);
+                  }}
+                >
+                  {modelUnlocked && (
+                    <button
+                      type="button"
+                      className="map-lock-btn"
+                      onClick={() => setModelUnlocked(false)}
+                      title="Disable model interaction"
+                    >
+                      Lock model
+                    </button>
+                  )}
+                  {!modelUnlocked && (
+                    <div
+                      className="map-lock-overlay"
+                      role="button"
+                      tabIndex={0}
+                      style={{ background: "transparent" }}
+                    >
+                      Click to activate the model
+                    </div>
+                  )}
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      pointerEvents: modelUnlocked ? "auto" : "none",
+                    }}
+                  >
+                    <TerrainOsmViewer ref={terrainViewerRef} />
+                  </div>
+                </div>
               </div>
             </section>
 
