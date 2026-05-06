@@ -10,7 +10,9 @@ function toText(v) {
 
 function buildImgSrc(photoPathFromJson) {
   // JSON: "images/parametric_tree.jpg"
-  return `../data/${photoPathFromJson}`;
+  const baseUrl = import.meta.env.BASE_URL || "/";
+  const rel = String(photoPathFromJson || "").replace(/^\//, "");
+  return `${baseUrl}${rel}`;
 }
 
 function SolutionsCard({ solution }) {
@@ -36,7 +38,7 @@ function SolutionsCard({ solution }) {
   return (
     <div className="panel" style={{ boxSizing: "border-box", maxWidth: "100%", marginLeft: 12 }}>
       <img
-        src={`/${solution.photo}`}
+        src={imgSrc}
         alt={solution.name}
         style={{
           maxHeight: 326,

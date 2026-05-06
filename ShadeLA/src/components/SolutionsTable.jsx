@@ -228,7 +228,9 @@ export default function SolutionsTable({ data, selectedId, onSelect }) {
                   >
                     {TABLE_COLUMNS.map((col) => {
                       if (col.type === "photo") {
-                        const imgSrc = `../data/${r.photo}`;
+                        const baseUrl = import.meta.env.BASE_URL || "/";
+                        const rel = String(r.photo || "").replace(/^\//, "");
+                        const imgSrc = `${baseUrl}${rel}`;
                         return (
                           <td key={col.key} style={{ padding: "10px 12px" }}>
                             <img
