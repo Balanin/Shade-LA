@@ -53,7 +53,11 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
           CESIUM_ION_TOKEN: ${{ secrets.CESIUM_ION_TOKEN }}
-        run: npm run build
+        run: |
+          npm run build
+          if [ ! -d "out" ]; then
+            npx next export
+          fi
 
       - name: Merge cad-3d into UI dist
         run: |
