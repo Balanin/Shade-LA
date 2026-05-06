@@ -48,6 +48,11 @@ jobs:
         working-directory: ShadeLA/cad-3d
         run: npm install
 
+      - name: Disable cad-3d API routes for Pages export
+        working-directory: ShadeLA/cad-3d
+        run: |
+          rm -rf src/app/api
+
       - name: Build cad-3d (static export)
         working-directory: ShadeLA/cad-3d
         env:
