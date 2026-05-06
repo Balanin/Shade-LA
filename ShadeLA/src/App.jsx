@@ -22,7 +22,8 @@ function App() {
 
   const [tocQuery, setTocQuery] = useState("");
 
-  const cadMapperUrl = import.meta.env.VITE_CADMAPPER_URL || "http://localhost:3001";
+  const cadMapperUrl =
+    import.meta.env.VITE_CADMAPPER_URL || `${import.meta.env.BASE_URL}cad-3d/dashboard/`;
 
   const tocItems = useMemo(
     () => [

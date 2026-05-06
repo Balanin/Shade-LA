@@ -10,7 +10,7 @@ export default function Dashboard() {
   const isGithubPages =
     typeof window !== "undefined" &&
     window.location.hostname.endsWith("github.io") &&
-    window.location.pathname.startsWith("/Shade-LA/");
+    window.location.pathname.startsWith("/Shade-LA/cad-3d/");
 
   const rhinoCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);

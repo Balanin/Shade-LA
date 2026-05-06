@@ -22,7 +22,7 @@ export default function CesiumMap() {
   const isGithubPages =
     typeof window !== "undefined" &&
     window.location.hostname.endsWith("github.io") &&
-    window.location.pathname.startsWith("/Shade-LA/");
+    window.location.pathname.startsWith("/Shade-LA/cad-3d/");
 
   // keep ref in sync so Cesium event handlers see current mode
   useEffect(() => {

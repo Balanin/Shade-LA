@@ -6,6 +6,7 @@ import path from 'node:path'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/Shade-LA/',
   server: {
     proxy: {
       '/api': {

@@ -5,7 +5,7 @@ import * as dotenv from "dotenv";
 
 dotenv.config({ path: path.resolve(__dirname, "..", ".env"), override: false });
 
-const basePath = "/Shade-LA";
+const basePath = "/Shade-LA/cad-3d";
 
 const nextConfig: NextConfig = {
   output: "export",
