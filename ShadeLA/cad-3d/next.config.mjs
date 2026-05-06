@@ -10,10 +10,19 @@ try {
   // ignore
 }
 
+const basePath = "/Shade-LA/cad-3d";
+
 const nextConfig = {
+  output: "export",
+  basePath,
+  assetPrefix: `${basePath}/`,
+  trailingSlash: true,
+  images: {
+    unoptimized: true,
+  },
   env: {
     NEXT_PUBLIC_CESIUM_ION_TOKEN: process.env.CESIUM_ION_TOKEN,
-    NEXT_PUBLIC_CESIUM_BASE_URL: '/cesium'
+    NEXT_PUBLIC_CESIUM_BASE_URL: `${basePath}/cesium`
   },
   turbopack: {},
   serverExternalPackages: [
