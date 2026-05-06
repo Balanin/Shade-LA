@@ -2393,11 +2393,12 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const shadePresets = Array.from(shadePresetsRef.current.values());
   void presetThumbNonce;
 
-  const presetPreviewUrl = (preset) => {
+  const getPresetThumbUrl = (preset) => {
     const label = String(preset?.label || "");
     if (!label) return null;
     const svgName = label.replace(/\.[^/.]+$/, ".svg");
-    return `/3dmodels/${encodeURIComponent(svgName)}`;
+    const baseUrl = import.meta.env.BASE_URL || "/";
+    return `${baseUrl}3dmodels/${encodeURIComponent(svgName)}`;
   };
 
   const analysisLegendGradient = useMemo(() => {
