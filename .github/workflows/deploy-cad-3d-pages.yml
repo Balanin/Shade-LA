@@ -36,7 +36,7 @@ jobs:
 
       - name: Install UI
         working-directory: ShadeLA
-        run: npm ci
+        run: npm install
 
       - name: Build UI (Vite)
         working-directory: ShadeLA
@@ -46,7 +46,7 @@ jobs:
 
       - name: Install cad-3d
         working-directory: ShadeLA/cad-3d
-        run: npm ci
+        run: npm install
 
       - name: Build cad-3d (static export)
         working-directory: ShadeLA/cad-3d
