@@ -10,19 +10,23 @@ try {
   // ignore
 }
 
-const basePath = "/Shade-LA/cad-3d";
+const isPagesBuild =
+  process.env.NEXT_PUBLIC_DEPLOY_TARGET === "pages" ||
+  process.env.GITHUB_ACTIONS === "true";
+
+const basePath = isPagesBuild ? "/Shade-LA/cad-3d" : "";
 
 const nextConfig = {
   output: "export",
   basePath,
-  assetPrefix: `${basePath}/`,
+  assetPrefix: basePath ? `${basePath}/` : undefined,
   trailingSlash: true,
   images: {
     unoptimized: true,
   },
   env: {
     NEXT_PUBLIC_CESIUM_ION_TOKEN: process.env.CESIUM_ION_TOKEN,
-    NEXT_PUBLIC_CESIUM_BASE_URL: `${basePath}/cesium`
+    NEXT_PUBLIC_CESIUM_BASE_URL: `${basePath || ""}/cesium`
   },
   turbopack: {},
   serverExternalPackages: [

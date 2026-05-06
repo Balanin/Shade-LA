@@ -57,6 +57,7 @@ jobs:
         working-directory: ShadeLA/cad-3d
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+          NEXT_PUBLIC_DEPLOY_TARGET: pages
           CESIUM_ION_TOKEN: ${{ secrets.CESIUM_ION_TOKEN }}
         run: |
           npm run build
@@ -66,14 +67,34 @@ jobs:
         run: |
           rm -rf ShadeLA/dist/cad-3d
           mkdir -p ShadeLA/dist/cad-3d
+          OUT_DIR=""
           if [ -d "ShadeLA/cad-3d/out" ]; then
-            cp -R ShadeLA/cad-3d/out/* ShadeLA/dist/cad-3d/
+            OUT_DIR="ShadeLA/cad-3d/out"
           elif [ -d "ShadeLA/out" ]; then
-            cp -R ShadeLA/out/* ShadeLA/dist/cad-3d/
-          else
+            OUT_DIR="ShadeLA/out"
+          fi
+
+          if [ -z "$OUT_DIR" ]; then
             echo "ERROR: cad-3d export output directory not found. Expected ShadeLA/cad-3d/out or ShadeLA/out"
             echo "Listing ShadeLA/cad-3d:" && ls -la ShadeLA/cad-3d || true
             echo "Listing ShadeLA:" && ls -la ShadeLA || true
+            exit 1
+          fi
+
+          echo "cad-3d export OUT_DIR=$OUT_DIR"
+          ls -la "$OUT_DIR" || true
+
+          # Next export layout can be either:
+          # - out/dashboard/index.html
+          # - out/Shade-LA/cad-3d/dashboard/index.html  (when basePath gets baked into output)
+          if [ -d "$OUT_DIR/dashboard" ]; then
+            cp -R "$OUT_DIR"/* ShadeLA/dist/cad-3d/
+          elif [ -d "$OUT_DIR/Shade-LA/cad-3d/dashboard" ]; then
+            cp -R "$OUT_DIR/Shade-LA/cad-3d"/* ShadeLA/dist/cad-3d/
+          else
+            echo "ERROR: cad-3d export does not contain dashboard route in expected location"
+            echo "Searching for dashboard/index.html..."
+            find "$OUT_DIR" -maxdepth 6 -type f -name "index.html" | head -n 200 || true
             exit 1
           fi
 
