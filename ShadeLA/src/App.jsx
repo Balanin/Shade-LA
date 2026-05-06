@@ -9,7 +9,6 @@ import Solutions from "./components/Solutions";
 function App() {
   const [selectedArea, setSelectedArea] = useState(null);
   const [mapUnlocked, setMapUnlocked] = useState(false);
-  const [modelUnlocked, setModelUnlocked] = useState(false);
 
   const terrainViewerRef = useRef(null);
 
@@ -216,36 +215,12 @@ function App() {
               <div className="panel-header">
                 <h2>Model</h2>
               </div>
-              <div className="panel-body" style={{ position: "relative" }}>
+              <div className="panel-body" style={{ position: "relative", height: "100%", minHeight: 420 }}>
                 <div
                   id="Model"
-                  className={modelUnlocked ? "map-unlocked" : "map-locked"}
-                  style={{ position: "relative" }}
+                  style={{ position: "relative", width: "100%", height: "100%", minHeight: 420 }}
                 >
-                  <div style={{ pointerEvents: modelUnlocked ? "auto" : "none" }}>
-                    <TerrainOsmViewer ref={terrainViewerRef} />
-                  </div>
-                  {modelUnlocked && (
-                    <button
-                      type="button"
-                      className="map-lock-btn"
-                      onClick={() => setModelUnlocked(false)}
-                      title="Disable model interaction"
-                    >
-                      Lock model
-                    </button>
-                  )}
-                  {!modelUnlocked && (
-                    <div
-                      className="map-lock-overlay"
-                      role="button"
-                      tabIndex={0}
-                      style={{ position: "absolute", inset: 0, background: "transparent" }}
-                      onClick={() => setModelUnlocked(true)}
-                    >
-                      Click to activate the model
-                    </div>
-                  )}
+                  <TerrainOsmViewer ref={terrainViewerRef} />
                 </div>
               </div>
             </section>

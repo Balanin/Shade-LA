@@ -59,6 +59,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const [shadePresetsLoadError, setShadePresetsLoadError] = useState(null);
   const [shadePresetsUiNonce, setShadePresetsUiNonce] = useState(0);
 
+  const [webglInitError, setWebglInitError] = useState(null);
+
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
@@ -1887,13 +1889,21 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const mount = mountRef.current;
     if (!mount) return;
 
+    setWebglInitError(null);
+
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#0a121e");
 
     const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500000);
     camera.position.set(500, 350, 500);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+    } catch (e) {
+      setWebglInitError(e instanceof Error ? e.message : String(e));
+      return;
+    }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.domElement.style.position = "absolute";
@@ -2406,6 +2416,24 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       ref={mountRef}
       style={{ position: "relative", width: "100%", height: "100%", background: "#0a121e", overflow: "hidden" }}
     >
+      {webglInitError && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            textAlign: "center",
+            color: "rgba(230,240,255,0.95)",
+            background: "rgba(10, 18, 30, 0.75)",
+            zIndex: 10,
+          }}
+        >
+          WebGL renderer failed to initialize: {webglInitError}
+        </div>
+      )}
       <div
         style={{
           position: "absolute",
