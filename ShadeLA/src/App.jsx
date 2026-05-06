@@ -220,11 +220,11 @@ function App() {
                 <div
                   id="Model"
                   className={modelUnlocked ? "map-unlocked" : "map-locked"}
-                  style={{ position: "absolute", inset: 0 }}
-                  onClick={() => {
-                    if (!modelUnlocked) setModelUnlocked(true);
-                  }}
+                  style={{ position: "relative" }}
                 >
+                  <div style={{ pointerEvents: modelUnlocked ? "auto" : "none" }}>
+                    <TerrainOsmViewer ref={terrainViewerRef} />
+                  </div>
                   {modelUnlocked && (
                     <button
                       type="button"
@@ -240,20 +240,12 @@ function App() {
                       className="map-lock-overlay"
                       role="button"
                       tabIndex={0}
-                      style={{ background: "transparent" }}
+                      style={{ position: "absolute", inset: 0, background: "transparent" }}
+                      onClick={() => setModelUnlocked(true)}
                     >
                       Click to activate the model
                     </div>
                   )}
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      pointerEvents: modelUnlocked ? "auto" : "none",
-                    }}
-                  >
-                    <TerrainOsmViewer ref={terrainViewerRef} />
-                  </div>
                 </div>
               </div>
             </section>
