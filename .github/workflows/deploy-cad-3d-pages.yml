@@ -1,0 +1,82 @@
+name: Deploy UI + cad-3d to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ShadeLA/**"
+      - ".github/workflows/deploy-cad-3d-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            ShadeLA/package-lock.json
+            ShadeLA/cad-3d/package-lock.json
+
+      - name: Install UI
+        working-directory: ShadeLA
+        run: npm ci
+
+      - name: Build UI (Vite)
+        working-directory: ShadeLA
+        env:
+          VITE_ANALYSIS_API_BASE_URL: https://shade-p.onrender.com
+        run: npm run build
+
+      - name: Install cad-3d
+        working-directory: ShadeLA/cad-3d
+        run: npm ci
+
+      - name: Build cad-3d (static export)
+        working-directory: ShadeLA/cad-3d
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          CESIUM_ION_TOKEN: ${{ secrets.CESIUM_ION_TOKEN }}
+        run: npm run build
+
+      - name: Merge cad-3d into UI dist
+        run: |
+          rm -rf ShadeLA/dist/cad-3d
+          mkdir -p ShadeLA/dist/cad-3d
+          cp -R ShadeLA/cad-3d/out/* ShadeLA/dist/cad-3d/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ShadeLA/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
