@@ -19,6 +19,11 @@ export default function CesiumMap() {
   const clickLastRef = useRef<Cesium.Cartographic | null>(null);
   const [webglError, setWebglError] = useState<string | null>(null);
 
+  const isGithubPages =
+    typeof window !== "undefined" &&
+    window.location.hostname.endsWith("github.io") &&
+    window.location.pathname.startsWith("/Shade-LA/");
+
   // keep ref in sync so Cesium event handlers see current mode
   useEffect(() => {
     drawAoiModeRef.current = drawAoiMode;
@@ -278,6 +283,7 @@ export default function CesiumMap() {
 
   async function highlightTractByGeoid(geoid: string) {
     if (!viewerRef.current || !geoid) return;
+    if (isGithubPages) return;
 
     try {
       const res = await fetch(`/api/tract-geom?geoid=${encodeURIComponent(geoid)}`);

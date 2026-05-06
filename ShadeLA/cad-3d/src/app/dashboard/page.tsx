@@ -7,6 +7,11 @@ import CesiumMap from "@/components/CesiumMap";
 import compute from "compute-rhino3d";
 
 export default function Dashboard() {
+  const isGithubPages =
+    typeof window !== "undefined" &&
+    window.location.hostname.endsWith("github.io") &&
+    window.location.pathname.startsWith("/Shade-LA/");
+
   const rhinoCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -199,6 +204,7 @@ export default function Dashboard() {
 
   // Load tracts list for the right panel
   useEffect(() => {
+    if (isGithubPages) return;
     let cancelled = false;
     const load = async () => {
       try {
@@ -224,6 +230,7 @@ export default function Dashboard() {
 
   // Load data for the selected tract
   useEffect(() => {
+    if (isGithubPages) return;
     if (!selectedGeoid) return;
     let cancelled = false;
     const load = async () => {
