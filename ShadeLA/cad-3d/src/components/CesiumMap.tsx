@@ -51,12 +51,26 @@ export default function CesiumMap() {
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const container = containerRef.current;
+
+    const waitForNonZeroSize = () => {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      return w > 0 && h > 0;
+    };
+
     (window as any).CESIUM_BASE_URL = process.env.NEXT_PUBLIC_CESIUM_BASE_URL || "/cesium";
     Cesium.Ion.defaultAccessToken = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN as string;
 
     let viewer: Cesium.Viewer;
-    try {
-      viewer = new Cesium.Viewer(containerRef.current, {
+    let raf = 0;
+    let resizeObserver: ResizeObserver | null = null;
+    let eventHandler: Cesium.ScreenSpaceEventHandler | null = null;
+
+    const init = () => {
+      if (viewerRef.current) return;
+      try {
+        viewer = new Cesium.Viewer(container, {
         timeline: false,
         animation: false,
         baseLayerPicker: false,
@@ -70,13 +84,29 @@ export default function CesiumMap() {
         sceneMode: Cesium.SceneMode.SCENE2D,
         mapProjection: new Cesium.WebMercatorProjection(),
         terrainProvider: new Cesium.EllipsoidTerrainProvider(),
-      });
-    } catch (e: any) {
-      setWebglError(String(e?.message || e));
-      return;
-    }
+        });
+      } catch (e: any) {
+        setWebglError(String(e?.message || e));
+        return;
+      }
 
-    viewerRef.current = viewer;
+      viewerRef.current = viewer;
+
+      try {
+        if (typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(() => {
+            try {
+              viewer.resize();
+              viewer.scene.requestRender();
+            } catch {
+              // ignore
+            }
+          });
+          resizeObserver.observe(container);
+        }
+      } catch {
+        resizeObserver = null;
+      }
 
     // 2D defaults similar to web maps
     viewer.scene.screenSpaceCameraController.enableTilt = false;
@@ -93,7 +123,7 @@ export default function CesiumMap() {
     viewer.camera.setView({ destination: laRect });
 
     // prevent context menu on right click
-    containerRef.current.addEventListener('contextmenu', (e) => e.preventDefault());
+    container.addEventListener('contextmenu', (e) => e.preventDefault());
 
     // OSM Standard: classic style (roads + green areas), as in the reference
     const osm = new Cesium.UrlTemplateImageryProvider({
@@ -108,6 +138,7 @@ export default function CesiumMap() {
 
     // AOI drawing / interactions
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    eventHandler = handler;
 
     function toCartographicFromScreen(position: Cesium.Cartesian2): Cesium.Cartographic | null {
       const scene = viewer.scene;
@@ -272,77 +303,44 @@ export default function CesiumMap() {
         // ignore
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    };
 
-    // Cleanup
+    const tick = () => {
+      if (waitForNonZeroSize()) {
+        init();
+        return;
+      }
+      raf = window.requestAnimationFrame(tick);
+    };
+    tick();
+
+    // cleanup
     return () => {
-      handler.destroy();
-      viewer.destroy();
+      try {
+        if (raf) window.cancelAnimationFrame(raf);
+      } catch {
+        // ignore
+      }
+      try {
+        resizeObserver?.disconnect?.();
+      } catch {
+        // ignore
+      }
+      try {
+        eventHandler?.destroy?.();
+      } catch {
+        // ignore
+      }
+      const v = viewerRef.current;
+      if (!v) return;
+      try {
+        v.destroy();
+      } catch {
+        // ignore
+      }
       viewerRef.current = null;
     };
   }, []);
-
-  async function highlightTractByGeoid(geoid: string) {
-    if (!viewerRef.current || !geoid) return;
-    if (isGithubPages) return;
-
-    try {
-      const res = await fetch(`/api/tract-geom?geoid=${encodeURIComponent(geoid)}`);
-      if (!res.ok) return;
-      const feature = await res.json();
-      const geom = feature.geometry;
-      if (!geom || !geom.type) return;
-
-      const coords: number[][][] = [];
-      if (geom.type === "Polygon") {
-        coords.push(geom.coordinates[0]);
-      } else if (geom.type === "MultiPolygon") {
-        for (const poly of geom.coordinates) {
-          if (poly[0]) coords.push(poly[0]);
-        }
-      } else return;
-
-      const positions: Cesium.Cartesian3[] = [];
-      let west = Infinity;
-      let south = Infinity;
-      let east = -Infinity;
-      let north = -Infinity;
-
-      for (const ring of coords) {
-        for (const [lon, lat] of ring) {
-          positions.push(Cesium.Cartesian3.fromDegrees(lon, lat));
-          west = Math.min(west, lon);
-          south = Math.min(south, lat);
-          east = Math.max(east, lon);
-          north = Math.max(north, lat);
-        }
-      }
-      if (!positions.length) return;
-
-      const viewer = viewerRef.current;
-      if (!viewer) return;
-
-      const entity = viewer.entities.add({
-        name: `Tract ${geoid}`,
-        polygon: {
-          hierarchy: new Cesium.PolygonHierarchy(positions),
-          material: Cesium.Color.LIME.withAlpha(0.25),
-          outline: true,
-          outlineColor: Cesium.Color.LIME,
-        },
-        properties: new Cesium.PropertyBag({
-          kind: "tract",
-          geoid,
-        }),
-      });
-      tractEntitiesRef.current.set(geoid, entity);
-
-      const rect = safeRectangleFromDegrees(west, south, east, north);
-      if (!rect) return;
-      viewer.camera.flyTo({ destination: rect });
-    } catch {
-      // ignore
-    }
-  }
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
@@ -400,7 +398,7 @@ export default function CesiumMap() {
           </button>
 
           <button
-            onClick={async () => {
+            onClick={() => {
               const rect = lastAoiRef.current;
               if (!rect || !viewerRef.current) {
                 alert("Сначала выделите область");
@@ -413,16 +411,20 @@ export default function CesiumMap() {
 
               try {
                 if (typeof window !== "undefined" && window.parent && window.parent !== window) {
-                  window.parent.postMessage(
-                    { type: "cadmapper:analyze", bbox: [west, south, east, north] },
-                    "*"
-                  );
+                  window.parent.postMessage({ type: "cadmapper:analyze", bbox: [west, south, east, north] }, "*");
                 }
               } catch {
                 // ignore
               }
             }}
-            style={{ padding: "8px 12px", background: "#111827", color: "#fff", border: "1px solid #ffffff33", borderRadius: 6, cursor: "pointer" }}
+            style={{
+              padding: "8px 12px",
+              background: "#111827",
+              color: "#fff",
+              border: "1px solid #ffffff33",
+              borderRadius: 6,
+              cursor: "pointer",
+            }}
           >
             Analyze
           </button>

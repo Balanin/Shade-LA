@@ -1,6 +1,10 @@
 import { createBuildingMeshPayload } from "./buildings.js";
 
-const ANALYSIS_API_BASE_URL = import.meta.env.VITE_ANALYSIS_API_BASE_URL || "http://127.0.0.1:8000";
+const DEFAULT_PROD_API_BASE_URL = "https://shade-p.onrender.com";
+const DEFAULT_DEV_API_BASE_URL = "http://127.0.0.1:8000";
+
+const ANALYSIS_API_BASE_URL =
+  import.meta.env.VITE_ANALYSIS_API_BASE_URL || (import.meta.env.PROD ? DEFAULT_PROD_API_BASE_URL : DEFAULT_DEV_API_BASE_URL);
 
 function buildApiUrl(path) {
   if (/^https?:\/\//.test(ANALYSIS_API_BASE_URL)) {
@@ -85,10 +89,11 @@ export async function runDirectSunHoursAnalysis({
       body: JSON.stringify(payload),
     });
   } catch (error) {
+    const hint = import.meta.env.PROD
+      ? "Could not reach the solar analysis backend."
+      : `Could not reach the solar analysis backend. Check that ${DEFAULT_DEV_API_BASE_URL} is running.`;
     throw new Error(
-      `Could not reach the solar analysis backend. Check that http://127.0.0.1:8000 is running and retry with a smaller area if needed. ${
-        error instanceof Error ? error.message : String(error)
-      }`.trim()
+      `${hint} Retry with a smaller area if needed. ${error instanceof Error ? error.message : String(error)}`.trim()
     );
   }
 
@@ -116,10 +121,11 @@ export async function runMeshFromPolylines({ polylines, options }) {
       body: JSON.stringify(payload),
     });
   } catch (error) {
+    const hint = import.meta.env.PROD
+      ? "Could not reach the mesh backend."
+      : `Could not reach the mesh backend. Check that ${DEFAULT_DEV_API_BASE_URL} is running.`;
     throw new Error(
-      `Could not reach the mesh backend. Check that http://127.0.0.1:8000 is running. ${
-        error instanceof Error ? error.message : String(error)
-      }`.trim()
+      `${hint} ${error instanceof Error ? error.message : String(error)}`.trim()
     );
   }
 
