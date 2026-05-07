@@ -60,6 +60,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const [shadePresetsUiNonce, setShadePresetsUiNonce] = useState(0);
 
   const [webglInitError, setWebglInitError] = useState(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateStatusText, setGenerateStatusText] = useState("");
 
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
@@ -204,9 +206,10 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
         const next = new Map();
         for (const filename of models) {
           const id = filename;
+          const displayLabel = filename.replace(/\.[^/.]+$/, "");
           next.set(id, {
             id,
-            label: filename,
+            label: displayLabel,
             objUrl: `${baseUrl}3dmodels/${encodeURIComponent(filename)}`,
             defaultCoolingFactor: 0.1,
             defaultScale: null,
@@ -685,6 +688,20 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   );
 
   function reportStatus(message) {
+    try {
+      const raw = String(message || "");
+      const sanitized = (() => {
+        if (!raw) return "";
+        if (/https?:\/\//i.test(raw)) {
+          if (/requesting/i.test(raw)) return "Requesting DEM...";
+          return "Loading city model...";
+        }
+        return raw;
+      })();
+      setGenerateStatusText(sanitized);
+    } catch {
+      // ignore
+    }
     if (typeof onStatus === "function") onStatus(message);
   }
 
@@ -858,8 +875,16 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const shape = meta.shape;
     const baseElevation = Number(meta.baseElevation ?? 0);
     const minHeight = Number(meta.minHeight ?? 0);
-    const height = Math.max(0.5, Number(nextHeight));
-    if (!Number.isFinite(height)) return;
+    const heightRaw = Number(nextHeight);
+    if (!Number.isFinite(heightRaw)) return;
+
+    if (heightRaw <= 0) {
+      rebuildBuildingMeshHeight(mesh, 0);
+      snapShadesOnBuildingToGround([mesh]);
+      return;
+    }
+
+    const height = heightRaw;
 
     const geometry = new THREE.ExtrudeGeometry(shape, {
       depth: height,
@@ -890,6 +915,8 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     } catch {
       // ignore
     }
+
+    snapShadesOnBuildingToRoof([mesh]);
   };
 
   const getBuildingMeshesByKey = (key) => {
@@ -907,6 +934,141 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
   const rebuildBuildingHeightByKey = (key, nextHeight) => {
     const meshes = getBuildingMeshesByKey(key);
     meshes.forEach((m) => rebuildBuildingMeshHeight(m, nextHeight));
+
+    const h = Number(nextHeight);
+    if (Number.isFinite(h) && h <= 0) {
+      snapShadesOnBuildingToGround(meshes);
+    } else if (Number.isFinite(h) && h > 0) {
+      snapShadesOnBuildingToRoof(meshes);
+    }
+  };
+
+  const snapShadesOnBuildingToRoof = (buildingMeshes) => {
+    if (!buildingMeshes?.length) return;
+
+    const meta = buildingMeshes[0]?.userData?.building;
+    const shape = meta?.shape;
+    if (!shape) return;
+
+    const height = Number(meta?.height ?? 0);
+    if (!Number.isFinite(height) || height <= 0) return;
+
+    const baseElevation = Number(meta?.baseElevation ?? 0);
+    const minHeight = Number(meta?.minHeight ?? 0);
+    const roofY = baseElevation + minHeight + height;
+    if (!Number.isFinite(roofY)) return;
+
+    const points = (() => {
+      try {
+        const extracted = shape.extractPoints?.(12);
+        const outer = extracted?.shape;
+        if (Array.isArray(outer) && outer.length >= 3) return outer;
+      } catch {
+        // ignore
+      }
+      try {
+        const outer = shape.getPoints?.(12);
+        if (Array.isArray(outer) && outer.length >= 3) return outer;
+      } catch {
+        // ignore
+      }
+      return null;
+    })();
+
+    if (!points) return;
+
+    const isInside = (x, z) => {
+      try {
+        return THREE.ShapeUtils.isPointInPolygon(new THREE.Vector2(x, z), points);
+      } catch {
+        return false;
+      }
+    };
+
+    const shades = shadeInstancesRef.current;
+    if (!Array.isArray(shades) || shades.length === 0) return;
+
+    shades.forEach((inst) => {
+      const x = Number(inst?.position?.x);
+      const z = Number(inst?.position?.z);
+      if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+      if (!isInside(x, z)) return;
+
+      const surfacePt = new THREE.Vector3(x, roofY, z);
+      const snapped = applyShadeYOffsetToSurfacePoint(inst.presetId, inst.scale, surfacePt);
+      updateShadeInstance(inst.id, { position: { x: snapped.x, y: snapped.y, z: snapped.z } });
+    });
+  };
+
+  const snapShadesOnBuildingToGround = (buildingMeshes) => {
+    if (!buildingMeshes?.length) return;
+
+    const shape = buildingMeshes[0]?.userData?.building?.shape;
+    if (!shape) return;
+
+    const points = (() => {
+      try {
+        const extracted = shape.extractPoints?.(12);
+        const outer = extracted?.shape;
+        if (Array.isArray(outer) && outer.length >= 3) return outer;
+      } catch {
+        // ignore
+      }
+      try {
+        const outer = shape.getPoints?.(12);
+        if (Array.isArray(outer) && outer.length >= 3) return outer;
+      } catch {
+        // ignore
+      }
+      return null;
+    })();
+
+    if (!points) return;
+
+    const isInside = (x, z) => {
+      try {
+        return THREE.ShapeUtils.isPointInPolygon(new THREE.Vector2(x, z), points);
+      } catch {
+        return false;
+      }
+    };
+
+    const terrainMesh = terrainStateRef.current?.mesh;
+    if (!terrainMesh) return;
+
+    const exaggeration = clampNumber(displayOptions?.exaggeration ?? 1, 0.0001, 1000);
+    const raycaster = raycasterRef.current;
+
+    const terrainHeightAtXZ = (x, z) => {
+      try {
+        const origin = new THREE.Vector3(x, 100000 * exaggeration, z);
+        const dir = new THREE.Vector3(0, -1, 0);
+        raycaster.set(origin, dir);
+        const hits = raycaster.intersectObject(terrainMesh, true);
+        const hit = hits?.[0];
+        if (!hit?.point) return null;
+        return hit.point.y / exaggeration;
+      } catch {
+        return null;
+      }
+    };
+
+    const shades = shadeInstancesRef.current;
+    if (!Array.isArray(shades) || shades.length === 0) return;
+
+    shades.forEach((inst) => {
+      const x = Number(inst?.position?.x);
+      const z = Number(inst?.position?.z);
+      if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+      if (!isInside(x, z)) return;
+
+      const groundY = terrainHeightAtXZ(x, z);
+      if (!Number.isFinite(groundY)) return;
+
+      const surfacePt = new THREE.Vector3(x, groundY, z);
+      const snapped = applyShadeYOffsetToSurfacePoint(inst.presetId, inst.scale, surfacePt);
+      updateShadeInstance(inst.id, { position: { x: snapped.x, y: snapped.y, z: snapped.z } });
+    });
   };
 
   const rebuildBuildingMeshHeight = (mesh, nextHeight) => {
@@ -1156,25 +1318,6 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     drawGroup.add(line);
   };
 
-  const createFinalLineFromPoints = (pts) => {
-    if (!pts || pts.length < 2) return null;
-    const geo = buildLineGeometry(pts);
-    const mat = new LineMaterial({
-      color: 0x60a5fa,
-      linewidth: 3.5,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-      opacity: 0.95,
-    });
-    syncLineMaterialResolution(mat);
-    const line = new Line2(geo, mat);
-    line.renderOrder = 60;
-    line.frustumCulled = false;
-    line.userData = { ...(line.userData || {}), isUserDrawn: true, isFinal: true };
-    return line;
-  };
-
   const screenToPointOnTerrain = (ev) => {
     const camera = cameraRef.current;
     const renderer = rendererRef.current;
@@ -1210,6 +1353,24 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     return out.clone();
   };
 
+  const createFinalLineFromPoints = (pts) => {
+    if (!pts || pts.length < 2) return null;
+    const geo = buildLineGeometry(pts);
+    const mat = new LineMaterial({
+      color: 0x60a5fa,
+      linewidth: 3.5,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.95,
+    });
+    syncLineMaterialResolution(mat);
+    const line = new Line2(geo, mat);
+    line.renderOrder = 60;
+    line.frustumCulled = false;
+    return line;
+  };
+
   const screenToPointOnBuildingsOrTerrain = (ev) => {
     const camera = cameraRef.current;
     const renderer = rendererRef.current;
@@ -1224,14 +1385,21 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const raycaster = raycasterRef.current;
     raycaster.setFromCamera(ndc, camera);
 
-    const exaggeration = clampNumber(displayOptions?.exaggeration ?? 1, 0.0001, 1000);
-
     const buildingGroup = buildingGroupRef.current;
     if (buildingGroup) {
       const hits = raycaster.intersectObjects(buildingGroup.children || [], true);
       if (hits?.length) {
-        const hit = hits.find((h) => h.object?.userData?.building) ?? hits[0];
+        const hit = hits.find((h) => {
+          const obj = h?.object;
+          const b = obj?.userData?.building;
+          if (!b) return false;
+          const bh = Number(b?.height ?? 0);
+          if (!Number.isFinite(bh) || bh <= 0) return false;
+          if (obj?.visible === false) return false;
+          return true;
+        });
         if (hit?.point) {
+          const exaggeration = clampNumber(displayOptions?.exaggeration ?? 1, 0.0001, 1000);
           const pt = hit.point.clone();
           pt.y = pt.y / exaggeration;
           pt.y += 0.18 / exaggeration;
@@ -1658,6 +1826,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
     const isCancelled = () => myGenerationId !== generationIdRef.current;
 
     try {
+      setIsGenerating(true);
       reportStatus("Requesting DEM...");
       disposeTerrainAndLayers();
 
@@ -1763,17 +1932,19 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
         }
 
         if (failed.length) {
-          reportStatus(`Terrain ready (OSM partial). ${failed.join(" | ")}`);
+          reportStatus(`OSM layers failed: ${failed.join(", ")}`);
+        } else if (loadedAny) {
+          reportStatus("OSM layers loaded.");
         } else {
-          reportStatus("Terrain + OSM ready");
+          reportStatus("OSM layers skipped.");
         }
-      } else {
-        reportStatus("Terrain ready");
       }
-
-      updateSunAndShadows();
     } catch (e) {
-      reportStatus(`Error: ${String(e?.message || e)}`);
+      reportStatus(`Generate failed: ${String(e?.message || e)}`);
+    } finally {
+      if (!isCancelled()) {
+        setIsGenerating(false);
+      }
     }
   }
 
@@ -2373,10 +2544,23 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       // setBounds(next) is async, so without this assignment we can generate the DEFAULT bounds.
       boundsRef.current = next;
       setBounds(next);
-      reportStatus("Analyze received: generating terrain + OSM...");
+      try {
+        setIsGenerating(true);
+      } catch {
+        // ignore
+      }
+      reportStatus("Loading city model...");
       // wait a tick so boundsRef updates
       window.setTimeout(() => {
-        generateRef.current({ includeOsmLayers: true });
+        try {
+          generateRef.current?.({ includeOsmLayers: true });
+        } catch {
+          try {
+            setIsGenerating(false);
+          } catch {
+            // ignore
+          }
+        }
       }, 0);
     };
 
@@ -2419,6 +2603,49 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
       ref={mountRef}
       style={{ position: "relative", width: "100%", height: "100%", background: "#0a121e", overflow: "hidden" }}
     >
+      {isGenerating && !webglInitError && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(10, 18, 30, 0.35)",
+            zIndex: 9,
+            pointerEvents: "auto",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 10,
+              padding: 14,
+              borderRadius: 12,
+              background: "rgba(10, 18, 30, 0.75)",
+              color: "rgba(230,240,255,0.95)",
+              minWidth: 240,
+              textAlign: "center",
+            }}
+          >
+            <div
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: "50%",
+                border: "4px solid rgba(255,255,255,0.22)",
+                borderTopColor: "rgba(96,165,250,0.95)",
+                animation: "shadela-spin 0.9s linear infinite",
+              }}
+            />
+            <div style={{ fontSize: 12, opacity: 0.95 }}>
+              {generateStatusText || "Loading city model..."}
+            </div>
+          </div>
+        </div>
+      )}
       {webglInitError && (
         <div
           style={{
@@ -2437,6 +2664,7 @@ const TerrainOsmViewer = forwardRef(function TerrainOsmViewer({ options, onStatu
           WebGL renderer failed to initialize: {webglInitError}
         </div>
       )}
+      <style>{"@keyframes shadela-spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}"}</style>
       <div
         style={{
           position: "absolute",
